@@ -70,7 +70,11 @@ export default function BacktestHub() {
   const [runMsg, setRunMsg]         = useState<string | null>(null);
   const [error, setError]           = useState<string | null>(null);
   const [lastFetch, setLastFetch]   = useState<Date | null>(null);
-  const marketOpen = isMarketOpen();
+  const [marketOpen, setMarketOpen] = useState(false);
+
+  useEffect(() => {
+    setMarketOpen(isMarketOpen());
+  }, []);
 
   const refresh = useCallback(async () => {
     try {

@@ -19,7 +19,7 @@ export default function RootLayout({
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
       </head>
-      <body style={{ background: "#0a0e17", minHeight: "100vh" }}>
+      <body suppressHydrationWarning style={{ background: "#0a0e17", minHeight: "100vh" }}>
         {children}
       </body>
     </html>
