@@ -122,16 +122,19 @@ git push -u origin main
 9. Click **Deploy** → wait ~3 minutes
 10. Your backend URL will be something like: `https://trading-engine-xxxx.onrender.com`
 
-### Step D: Deploy Frontend on Vercel (Free)
+### Step D: Deploy Frontend on Netlify (Free)
 
-1. Go to: https://vercel.com → Sign up with GitHub
-2. Click **"Add New"** → **"Project"**
-3. Import your GitHub repo
-4. Set **Root Directory** to: `frontend`
-5. Under **Environment Variables**, add:
+1. Go to: https://netlify.com → Sign up with GitHub
+2. Click **"Add new site"** → **"Import an existing project"**
+3. Connect your GitHub account and select your `trading-engine` repo
+4. The deployment settings will be **auto-filled** (thanks to the `netlify.toml` file we added):
+   - Base directory: `frontend`
+   - Build command: `npm run build`
+   - Publish directory: `frontend/out`
+5. Click **"Add environment variables"** and add:
    - `NEXT_PUBLIC_API_URL` = `https://trading-engine-xxxx.onrender.com` (your Render URL from Step C)
-6. Click **Deploy** → wait ~2 minutes
-7. Your dashboard URL will be: `https://trading-engine.vercel.app` (or similar)
+6. Click **Deploy site** → wait ~2 minutes
+7. Your dashboard URL will be provided by Netlify (e.g., `https://your-site-name.netlify.app`). You can change this in the Site Settings.
 
 ### Step E: Keep Render Awake (Free UptimeRobot)
 
