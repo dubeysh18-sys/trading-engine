@@ -1,0 +1,14 @@
+[build]
+  base    = "frontend"
+  command = "npm run build"
+  publish = "frontend/out"
+
+[build.environment]
+  NODE_VERSION = "20"
+  # Set NEXT_PUBLIC_API_URL to your Render backend URL in Netlify dashboard
+  # e.g. https://trading-engine-xxxx.onrender.com
+
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200

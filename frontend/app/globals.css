@@ -1,0 +1,243 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Root Variables ─────────────────────────────────────────── */
+:root {
+  --bg:           #0a0e17;
+  --bg-surface:   #111827;
+  --bg-card:      #1a2233;
+  --bg-border:    #1e2d45;
+  --accent-green: #00d084;
+  --accent-red:   #ff4d4d;
+  --accent-yellow: #fbbf24;
+  --accent-blue:  #3b82f6;
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted:   #4b5563;
+}
+
+/* ── Base ───────────────────────────────────────────────────── */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background-color: var(--bg);
+  color: var(--text-primary);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--bg-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #2d4a6e; }
+
+/* ── Data Tables ────────────────────────────────────────────── */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+}
+
+.data-table th {
+  text-align: left;
+  padding: 8px 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid var(--bg-border);
+  background: var(--bg-surface);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.data-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid rgba(30, 45, 69, 0.5);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.data-table tr:hover td {
+  background: rgba(59, 130, 246, 0.05);
+  cursor: default;
+}
+
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* ── Verdict Pills ──────────────────────────────────────────── */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pill-enter {
+  background: rgba(0, 208, 132, 0.15);
+  color: var(--accent-green);
+  border: 1px solid rgba(0, 208, 132, 0.3);
+}
+
+.pill-wait {
+  background: rgba(251, 191, 36, 0.12);
+  color: var(--accent-yellow);
+  border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+.pill-skip {
+  background: rgba(255, 77, 77, 0.12);
+  color: var(--accent-red);
+  border: 1px solid rgba(255, 77, 77, 0.3);
+}
+
+.pill-pending {
+  background: rgba(148, 163, 184, 0.1);
+  color: var(--text-secondary);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+/* ── Cards ──────────────────────────────────────────────────── */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--bg-border);
+  border-radius: 10px;
+}
+
+.card-header {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--bg-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.card-body {
+  padding: 0;
+  overflow: auto;
+  max-height: calc(100vh - 280px);
+}
+
+/* ── Stat Cards ─────────────────────────────────────────────── */
+.stat-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-border);
+  border-radius: 8px;
+  padding: 14px 18px;
+}
+
+.stat-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.stat-label {
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 4px;
+}
+
+/* ── Pulse Dots ─────────────────────────────────────────────── */
+.pulse-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pulse-dot-green {
+  background: var(--accent-green);
+  box-shadow: 0 0 0 0 rgba(0, 208, 132, 0.7);
+  animation: pulse-green 2s ease-in-out infinite;
+}
+
+.pulse-dot-red {
+  background: var(--accent-red);
+  box-shadow: 0 0 0 0 rgba(255, 77, 77, 0.7);
+  animation: pulse-red 2s ease-in-out infinite;
+}
+
+.pulse-dot-gray {
+  background: var(--text-muted);
+}
+
+@keyframes pulse-green {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 208, 132, 0.7); }
+  50%       { box-shadow: 0 0 0 8px rgba(0, 208, 132, 0); }
+}
+
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 77, 77, 0.7); }
+  50%       { box-shadow: 0 0 0 8px rgba(255, 77, 77, 0); }
+}
+
+/* ── Outcome colours ────────────────────────────────────────── */
+.outcome-profit { color: var(--accent-green); }
+.outcome-loss   { color: var(--accent-red); }
+.outcome-flat   { color: var(--text-secondary); }
+
+/* ── Button ─────────────────────────────────────────────────── */
+.btn-primary {
+  background: var(--accent-blue);
+  color: #fff;
+  border: none;
+  border-radius: 7px;
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #2563eb;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.35);
+}
+
+.btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ── Animations ─────────────────────────────────────────────── */
+.animate-fade-in  { animation: fadeIn 0.4s ease-out; }
+.animate-slide-in { animation: slideIn 0.3s ease-out; }
+
+@keyframes fadeIn  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideIn { from { transform: translateY(-8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* ── Divider ─────────────────────────────────────────────────── */
+.divider { border: none; border-top: 1px solid var(--bg-border); margin: 0; }
+
+/* ── Tooltip ─────────────────────────────────────────────────── */
+.tooltip-text {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}

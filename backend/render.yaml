@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: trading-engine-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: UPSTOX_ACCESS_TOKEN
+        sync: false          # Set this manually in Render dashboard
+      - key: CORS_ORIGINS
+        sync: false          # Set to your Vercel URL e.g. https://trading-engine.vercel.app
+      - key: DATABASE_URL
+        value: sqlite:///./trading.db
+    disk:
+      name: trading-db
+      mountPath: /opt/render/project/src
+      sizeGB: 1
