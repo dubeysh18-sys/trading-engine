@@ -71,6 +71,8 @@ class BacktestResult(Base):
     exit_price  = Column(Float, nullable=True)
     outcome     = Column(String(20), nullable=True)   # PROFIT | LOSS | FLAT
     pnl_pct     = Column(Float, nullable=True)        # e.g. 1.25 means +1.25%
+    quantity    = Column(Integer, nullable=True)      # Shares bought (50k * 4x / entry_price)
+    pnl_amount  = Column(Float, nullable=True)        # Absolute P&L in ₹
 
     created_at  = Column(DateTime, default=datetime.utcnow)
 

@@ -325,6 +325,8 @@ def get_backtest_results(db: Session = Depends(get_db)):
             "exit_price":   bt.exit_price,
             "outcome":      bt.outcome,
             "pnl_pct":      bt.pnl_pct,
+            "quantity":     bt.quantity,
+            "pnl_amount":   bt.pnl_amount,
             "target":       alert.target,
             "stop_loss":    alert.stop_loss,
         })
@@ -344,6 +346,8 @@ def get_backtest_results(db: Session = Depends(get_db)):
 
     pnls = [t["pnl_pct"] for t in trades if t["pnl_pct"] is not None]
     net_pnl = round(sum(pnls) / len(pnls), 2) if pnls else 0
+    pnl_amounts = [t["pnl_amount"] for t in trades if t["pnl_amount"] is not None]
+    net_pnl_amount = round(sum(pnl_amounts), 2) if pnl_amounts else 0
 
     return {
         "summary": {
@@ -354,6 +358,7 @@ def get_backtest_results(db: Session = Depends(get_db)):
             "flats":              flats,
             "win_rate_pct":       win_rate,
             "net_pnl_pct":        net_pnl,
+            "net_pnl_amount":     net_pnl_amount,
         },
         "trades": trades
     }

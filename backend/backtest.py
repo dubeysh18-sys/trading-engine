@@ -50,7 +50,7 @@ def run_backtest(date_str: str | None = None) -> dict:
     logger.info(f"Starting backtest for date: {date_str}")
     db: Session = SessionLocal()
     results = {"date": date_str, "processed": 0, "wins": 0, "losses": 0, "flats": 0,
-               "win_rate": 0.0, "net_pnl_pct": 0.0, "errors": []}
+               "win_rate": 0.0, "net_pnl_pct": 0.0, "net_pnl_amount": 0.0, "errors": []}
 
     try:
         # Fetch all ENTER alerts for this date
@@ -92,6 +92,9 @@ def run_backtest(date_str: str | None = None) -> dict:
             if bt_results:
                 results["net_pnl_pct"] = round(
                     sum(r.pnl_pct for r in bt_results) / len(bt_results), 2
+                )
+                results["net_pnl_amount"] = round(
+                    sum(r.pnl_amount for r in bt_results if r.pnl_amount is not None), 2
                 )
 
     except Exception as e:
@@ -180,6 +183,8 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
             break
 
     pnl_pct = round((exit_price - entry_price) / entry_price * 100, 2)
+    quantity = int((50000 * 4) / entry_price)
+    pnl_amount = round(quantity * (exit_price - entry_price), 2)
 
     bt_result = BacktestResult(
         alert_id    = alert.id,
@@ -189,6 +194,8 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
         exit_price  = round(exit_price, 2),
         outcome     = outcome,
         pnl_pct     = pnl_pct,
+        quantity    = quantity,
+        pnl_amount  = pnl_amount,
     )
     db.add(bt_result)
     logger.info(f"  {alert.stock}: {outcome} | P&L: {pnl_pct}%")
