@@ -48,10 +48,11 @@ def calculate_pivot_points(prev_day_df: pd.DataFrame) -> dict:
     pivot = (high + low + close) / 3
     r1 = (2 * pivot) - low
     r2 = pivot + (high - low)
+    r3 = high + 2 * (pivot - low)
     s1 = (2 * pivot) - high
     s2 = pivot - (high - low)
 
-    return {"pivot": pivot, "r1": r1, "r2": r2, "s1": s1, "s2": s2}
+    return {"pivot": pivot, "r1": r1, "r2": r2, "r3": r3, "s1": s1, "s2": s2, "yesterday_high": high}
 
 
 def get_indicator_snapshot(df: pd.DataFrame) -> dict:
@@ -100,6 +101,8 @@ def get_indicator_snapshot(df: pd.DataFrame) -> dict:
         "ema9":        round(latest["ema9"], 2) if pd.notna(latest["ema9"]) else None,
         "pivot_r1":    round(pivots.get("r1", 0), 2),
         "pivot_r2":    round(pivots.get("r2", 0), 2),
+        "pivot_r3":    round(pivots.get("r3", 0), 2),
+        "yesterday_high": round(pivots.get("yesterday_high", 0), 2),
         "pivot_s1":    round(pivots.get("s1", 0), 2),
         "upper_wick":  round(upper_wick, 4),
         "solid_body":  round(solid_body, 4),
@@ -145,10 +148,15 @@ def evaluate_rules(
     # Current price: prefer Chartink trigger_price, fallback to latest close
     current_price = trigger_price if trigger_price else indicators["latest_close"]
     vwap     = indicators["vwap"]
+    ema9     = indicators["ema9"]
     r1       = indicators["pivot_r1"]
     r2       = indicators["pivot_r2"]
+    r3       = indicators.get("pivot_r3")
+    y_high   = indicators.get("yesterday_high")
     upper_wick = indicators["upper_wick"]
     solid_body = indicators["solid_body"]
+    close_price = indicators["latest_close"]
+    open_price = indicators["latest_open"]
 
     nifty_ltp  = nifty_indicators.get("latest_close")
     nifty_vwap = nifty_indicators.get("vwap")
@@ -156,25 +164,36 @@ def evaluate_rules(
     verdict        = "ENTER"
     verdict_reason = "All 4 rules passed — clear entry signal"
 
-    # ── Rule 1: The Ceiling (Near Resistance) ─────────────────
-    if r1 and current_price >= (r1 * 0.997) and current_price < r1:
+    # ── Rule 1: The Ceiling (Pivots) ──────────────────────────
+    # Is current price within 0.3% below a Pivot line (R1, R2, R3) or Yesterday's High?
+    ceilings = [val for val in (r1, r2, r3, y_high) if val and val > 0]
+    is_hitting_ceiling = False
+    for ceiling in ceilings:
+        if ceiling * 0.997 <= current_price < ceiling:
+            is_hitting_ceiling = True
+            break
+            
+    if is_hitting_ceiling:
         verdict        = "SKIP"
-        verdict_reason = "Hitting Resistance (within 0.3% of Pivot R1)"
+        verdict_reason = "Hitting The Ceiling (within 0.3% below a Pivot or Y-High)"
 
-    # ── Rule 2: Market Wind (NIFTY below VWAP) ────────────────
+    # ── Rule 2: Market Wind (Index) ───────────────────────────
     elif nifty_ltp and nifty_vwap and nifty_ltp < nifty_vwap:
         verdict        = "SKIP"
-        verdict_reason = "Market Weakness (NIFTY LTP below NIFTY VWAP)"
+        verdict_reason = "Market Wind is against you (NIFTY below VWAP)"
 
-    # ── Rule 3: Base Camp (Overextended above VWAP) ───────────
-    elif vwap and current_price > (vwap * 1.008):
+    # ── Rule 3: Base Camp (The "Kiss") ────────────────────────
+    elif ema9 and current_price > (ema9 * 1.01): # Arbitrary >1% gap above EMA9 is a spike
         verdict        = "WAIT"
-        verdict_reason = "Overextended — wait for pullback to VWAP"
+        verdict_reason = "Base Camp: Vertical spike far above 9 EMA. Wait for pullback kiss."
 
-    # ── Rule 4: The Wick (Rejection candle) ───────────────────
+    # ── Rule 4: The Wick (Price Action) ───────────────────────
     elif upper_wick > solid_body:
         verdict        = "SKIP"
-        verdict_reason = "Rejection Wick — upper wick exceeds candle body"
+        verdict_reason = "The Wick: Massive upper wick (rejection) larger than solid body"
+    elif close_price <= open_price:
+        verdict        = "SKIP"
+        verdict_reason = "Not a solid green close"
 
     # ── Trade Parameters (only on ENTER) ──────────────────────
     entry     = round(current_price, 2) if verdict == "ENTER" else None
@@ -182,18 +201,24 @@ def evaluate_rules(
     target    = None
 
     if verdict == "ENTER":
-        # Target: R1 if price below R1, else R2
-        target = round(r2 if (r1 and current_price >= r1) else r1, 2) if r1 else None
-
-        # Stop Loss: MAX(VWAP - 0.1%, low of trigger candle)
-        vwap_sl = round(vwap * 0.999, 2) if vwap else None
-        candle_low_sl = indicators["latest_low"]
-        if vwap_sl and candle_low_sl:
-            stop_loss = round(max(vwap_sl, candle_low_sl), 2)
-        elif vwap_sl:
-            stop_loss = vwap_sl
+        # Target: Next closest ceiling above entry
+        higher_ceilings = [c for c in ceilings if c > current_price]
+        if higher_ceilings:
+            target = round(min(higher_ceilings), 2)
         else:
-            stop_loss = round(candle_low_sl, 2)
+            # If breaking out above all known ceilings, target +1.5%
+            target = round(current_price * 1.015, 2)
+
+        # Stop Loss: MAX(VWAP - 0.1%, low of trigger candle, or EMA9)
+        vwap_sl = round(vwap * 0.999, 2) if vwap else None
+        candle_low_sl = indicators.get("latest_low")
+        ema_sl = round(ema9 * 0.999, 2) if ema9 else None
+        
+        possible_sls = [val for val in (vwap_sl, candle_low_sl, ema_sl) if val is not None]
+        if possible_sls:
+            stop_loss = round(max(possible_sls), 2)
+        else:
+            stop_loss = round(current_price * 0.99, 2) # fallback 1%
 
     return {
         "verdict":        verdict,

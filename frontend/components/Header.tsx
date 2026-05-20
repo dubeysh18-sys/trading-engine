@@ -41,7 +41,13 @@ function useISTDate() {
   return date;
 }
 
-export default function Header() {
+export default function Header({
+  selectedDate,
+  setSelectedDate,
+}: {
+  selectedDate: string;
+  setSelectedDate: (d: string) => void;
+}) {
   const time = useISTClock();
   const date = useISTDate();
   const [nifty, setNifty] = useState<NiftyStatus | null>(null);
@@ -66,7 +72,7 @@ export default function Header() {
 
   useEffect(() => {
     refreshNifty();
-    const id = setInterval(refreshNifty, 15_000); // every 15s
+    const id = setInterval(refreshNifty, 300_000); // every 5 mins
     return () => clearInterval(id);
   }, [refreshNifty]);
 
@@ -218,8 +224,28 @@ export default function Header() {
         )}
       </div>
 
-      {/* ── Right: Clock ────────────────────────────────────── */}
+      {/* ── Right: Clock & Date Picker ────────────────────────────── */}
       <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+        
+        {/* Date Picker */}
+        <div style={{ marginRight: 8 }}>
+          <input
+            type="date"
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+            style={{
+              background: "#0a0e17",
+              color: "#e2e8f0",
+              border: "1px solid #1e2d45",
+              borderRadius: "6px",
+              padding: "4px 8px",
+              fontSize: "12px",
+              fontFamily: "JetBrains Mono, monospace",
+              outline: "none",
+            }}
+          />
+        </div>
+
         {lastRefresh && (
           <div style={{ display: "flex", alignItems: "center", gap: 5, color: "#4b5563", fontSize: 11 }}>
             <RefreshCw size={10} />

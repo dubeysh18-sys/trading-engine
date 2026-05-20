@@ -196,6 +196,7 @@ html, body {
 .outcome-profit { color: var(--accent-green); }
 .outcome-loss   { color: var(--accent-red); }
 .outcome-flat   { color: var(--text-secondary); }
+.outcome-pending { color: var(--accent-blue); }
 
 /* ── Button ─────────────────────────────────────────────────── */
 .btn-primary {

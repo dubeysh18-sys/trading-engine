@@ -1,10 +1,15 @@
 "use client";
 
+import { useState } from "react";
 import Header from "@/components/Header";
 import AlertFeed from "@/components/AlertFeed";
 import BacktestHub from "@/components/BacktestHub";
 
 export default function DashboardPage() {
+  const [selectedDate, setSelectedDate] = useState<string>(
+    new Date().toLocaleDateString("en-CA") // "YYYY-MM-DD" in local time
+  );
+
   return (
     <div
       style={{
@@ -15,7 +20,7 @@ export default function DashboardPage() {
       }}
     >
       {/* ── Top Bar ───────────────────────────────────────── */}
-      <Header />
+      <Header selectedDate={selectedDate} setSelectedDate={setSelectedDate} />
 
       {/* ── Main Workspace ────────────────────────────────── */}
       <main
@@ -31,12 +36,12 @@ export default function DashboardPage() {
       >
         {/* Left Column: Live Alert Feed */}
         <section style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-          <AlertFeed />
+          <AlertFeed selectedDate={selectedDate} />
         </section>
 
         {/* Right Column: EOD Backtester Hub */}
         <section style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-          <BacktestHub />
+          <BacktestHub selectedDate={selectedDate} />
         </section>
       </main>
 

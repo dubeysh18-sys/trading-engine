@@ -63,8 +63,9 @@ export interface BacktestResults {
 
 // ── Fetch Helpers ─────────────────────────────────────────────────────────────
 
-export async function fetchAlerts(): Promise<Alert[]> {
-  const res = await fetch(`${API}/api/alerts`, { cache: "no-store" });
+export async function fetchAlerts(date?: string): Promise<Alert[]> {
+  const url = date ? `${API}/api/alerts?date=${date}` : `${API}/api/alerts`;
+  const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`Alerts fetch failed: ${res.status}`);
   return res.json();
 }
@@ -75,8 +76,9 @@ export async function fetchNiftyStatus(): Promise<NiftyStatus> {
   return res.json();
 }
 
-export async function fetchBacktestResults(): Promise<BacktestResults> {
-  const res = await fetch(`${API}/api/backtest-results`, { cache: "no-store" });
+export async function fetchBacktestResults(date?: string): Promise<BacktestResults> {
+  const url = date ? `${API}/api/backtest-results?date=${date}` : `${API}/api/backtest-results`;
+  const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`Backtest results fetch failed: ${res.status}`);
   return res.json();
 }

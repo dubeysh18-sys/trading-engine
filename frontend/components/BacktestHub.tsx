@@ -62,7 +62,7 @@ function OutcomeIcon({ outcome }: { outcome: string | null }) {
   return <Minus size={13} color="var(--text-secondary)" />;
 }
 
-export default function BacktestHub() {
+export default function BacktestHub({ selectedDate }: { selectedDate: string }) {
   const [summary, setSummary]       = useState<BacktestSummary | null>(null);
   const [trades, setTrades]         = useState<BacktestTrade[]>([]);
   const [loading, setLoading]       = useState(true);
@@ -78,7 +78,7 @@ export default function BacktestHub() {
 
   const refresh = useCallback(async () => {
     try {
-      const data = await fetchBacktestResults();
+      const data = await fetchBacktestResults(selectedDate);
       setSummary(data.summary);
       setTrades(data.trades);
       setLastFetch(new Date());
@@ -88,7 +88,7 @@ export default function BacktestHub() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedDate]);
 
   useEffect(() => {
     refresh();
@@ -118,6 +118,7 @@ export default function BacktestHub() {
   const outcomeClass = (outcome: string | null) => {
     if (outcome === "PROFIT") return "outcome-profit";
     if (outcome === "LOSS") return "outcome-loss";
+    if (outcome === "PENDING") return "outcome-pending";
     return "outcome-flat";
   };
 
@@ -424,9 +425,9 @@ export default function BacktestHub() {
                         fontWeight: 600,
                       }}
                     >
-                      {trade.pnl_pct !== null
+                      {trade.pnl_pct !== null && trade.pnl_pct !== undefined
                         ? `${trade.pnl_pct > 0 ? "+" : ""}${trade.pnl_pct?.toFixed(2)}%`
-                        : "—"}
+                        : "Live"}
                     </span>
                   </td>
 
@@ -434,7 +435,7 @@ export default function BacktestHub() {
                     <span style={{ color: pnlColor(trade.pnl_amount), fontWeight: 600 }}>
                       {trade.pnl_amount !== null && trade.pnl_amount !== undefined
                         ? `${trade.pnl_amount > 0 ? "+" : ""}₹${Math.abs(trade.pnl_amount).toLocaleString("en-IN")}`
-                        : "—"}
+                        : "Live"}
                     </span>
                   </td>
 
@@ -468,7 +469,7 @@ export default function BacktestHub() {
         }}
       >
         <span>Auto-backtest: 15:30 IST (Mon–Fri)</span>
-        <span>Auto-refreshes every 30s</span>
+        <span>Auto-refreshes every 60s</span>
       </div>
 
       <style>{`

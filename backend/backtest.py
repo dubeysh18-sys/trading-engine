@@ -10,7 +10,7 @@ from datetime import datetime, time
 from sqlalchemy.orm import Session
 
 from database import Alert, BacktestResult, SessionLocal
-from upstox_client import get_historical_data
+from upstox_client import get_historical_data, get_ltp
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,73 @@ def parse_trigger_time(time_str: str) -> time | None:
     logger.warning(f"Could not parse trigger time: {time_str}")
     return None
 
+def create_pending_trade(alert: Alert, db: Session):
+    """Create a PENDING BacktestResult immediately when an ENTER alert fires."""
+    existing = db.query(BacktestResult).filter(BacktestResult.alert_id == alert.id).first()
+    if existing: return
+    
+    quantity = int((50000 * 4) / alert.entry_price) if alert.entry_price else 0
+    bt_result = BacktestResult(
+        alert_id    = alert.id,
+        entry_time  = alert.trigger_time,
+        entry_price = alert.entry_price,
+        outcome     = "PENDING",
+        quantity    = quantity,
+    )
+    db.add(bt_result)
+    db.commit()
+
+def track_live_trades():
+    """Fetches LTP for all PENDING trades and checks SL/Target."""
+    logger.info("Running 1-minute live trade tracker...")
+    db = SessionLocal()
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        now_time = datetime.now().time()
+        
+        # Are we at or past square off time?
+        force_square_off = now_time >= time(15, 15)
+        
+        pending_trades = db.query(BacktestResult).join(Alert).filter(
+            Alert.trigger_date == today,
+            BacktestResult.outcome == "PENDING"
+        ).all()
+        
+        for trade in pending_trades:
+            try:
+                alert = trade.alert
+                ltp = get_ltp(alert.stock)
+                if not ltp: continue
+                
+                outcome = None
+                exit_price = None
+                
+                # Check rules
+                if alert.target and ltp >= alert.target:
+                    outcome = "PROFIT"
+                    exit_price = alert.target
+                elif alert.stop_loss and ltp <= alert.stop_loss:
+                    outcome = "LOSS"
+                    exit_price = alert.stop_loss
+                elif force_square_off:
+                    outcome = "FLAT" if ltp == alert.entry_price else ("PROFIT" if ltp > alert.entry_price else "LOSS")
+                    exit_price = ltp
+                    
+                if outcome and exit_price is not None:
+                    trade.outcome = outcome
+                    trade.exit_price = exit_price
+                    trade.exit_time = datetime.now().strftime("%I:%M %p")
+                    trade.pnl_pct = round((exit_price - alert.entry_price) / alert.entry_price * 100, 2)
+                    trade.pnl_amount = round(trade.quantity * (exit_price - alert.entry_price), 2)
+                    logger.info(f"Live Track: Locked in {outcome} for {alert.stock} at ₹{exit_price}")
+            except Exception as e:
+                logger.error(f"Error tracking {trade.alert.stock}: {e}")
+                
+        db.commit()
+    except Exception as e:
+        logger.error(f"Live tracker top-level error: {e}")
+    finally:
+        db.close()
 
 def run_backtest(date_str: str | None = None) -> dict:
     """
@@ -109,14 +176,15 @@ def run_backtest(date_str: str | None = None) -> dict:
 
 
 def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
-    """Simulate a single trade and save the result."""
+    """Simulate a single trade and save the result (or update PENDING)."""
 
-    # Check if result already exists (idempotent)
+    # Check if result already exists and is finalized
     existing = db.query(BacktestResult).filter(
         BacktestResult.alert_id == alert.id
     ).first()
-    if existing:
-        logger.info(f"Backtest result already exists for alert {alert.id} ({alert.stock})")
+    
+    if existing and existing.outcome != "PENDING":
+        logger.info(f"Backtest result already finalized for alert {alert.id} ({alert.stock})")
         return existing
 
     # Parse trigger time
@@ -186,17 +254,29 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
     quantity = int((50000 * 4) / entry_price)
     pnl_amount = round(quantity * (exit_price - entry_price), 2)
 
-    bt_result = BacktestResult(
-        alert_id    = alert.id,
-        entry_time  = entry_time,
-        entry_price = entry_price,
-        exit_time   = exit_time,
-        exit_price  = round(exit_price, 2),
-        outcome     = outcome,
-        pnl_pct     = pnl_pct,
-        quantity    = quantity,
-        pnl_amount  = pnl_amount,
-    )
-    db.add(bt_result)
+    if existing:
+        # Update existing PENDING record
+        existing.entry_time = entry_time
+        existing.exit_time = exit_time
+        existing.exit_price = round(exit_price, 2)
+        existing.outcome = outcome
+        existing.pnl_pct = pnl_pct
+        existing.quantity = quantity
+        existing.pnl_amount = pnl_amount
+        bt_result = existing
+    else:
+        bt_result = BacktestResult(
+            alert_id    = alert.id,
+            entry_time  = entry_time,
+            entry_price = entry_price,
+            exit_time   = exit_time,
+            exit_price  = round(exit_price, 2),
+            outcome     = outcome,
+            pnl_pct     = pnl_pct,
+            quantity    = quantity,
+            pnl_amount  = pnl_amount,
+        )
+        db.add(bt_result)
+        
     logger.info(f"  {alert.stock}: {outcome} | P&L: {pnl_pct}%")
     return bt_result

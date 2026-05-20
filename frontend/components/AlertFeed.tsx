@@ -31,7 +31,7 @@ function formatTime(timeStr: string | null): string {
   return timeStr;
 }
 
-export default function AlertFeed() {
+export default function AlertFeed({ selectedDate }: { selectedDate: string }) {
   const [alerts, setAlerts]     = useState<Alert[]>([]);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState<string | null>(null);
@@ -39,7 +39,8 @@ export default function AlertFeed() {
 
   const refresh = useCallback(async () => {
     try {
-      const data = await fetchAlerts();
+      setLoading(true);
+      const data = await fetchAlerts(selectedDate);
       setAlerts(data);
       setLastFetch(new Date());
       setError(null);
@@ -48,13 +49,38 @@ export default function AlertFeed() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedDate]);
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 10_000); // poll every 10s
-    return () => clearInterval(id);
-  }, [refresh]);
+    
+    // Check if selectedDate is today
+    const today = new Date().toLocaleDateString("en-CA");
+    if (selectedDate !== today) return; // No SSE for past dates
+
+    // Connect to SSE for real-time updates
+    const API = process.env.NEXT_PUBLIC_API_URL || "https://trading-engine-58hz.onrender.com";
+    const eventSource = new EventSource(`${API}/api/alerts/stream`);
+    
+    eventSource.addEventListener("new_alert", (event) => {
+      try {
+        const newAlert = JSON.parse(event.data);
+        setAlerts((prev) => [newAlert, ...prev]);
+        setLastFetch(new Date());
+      } catch (e) {
+        console.error("Failed to parse SSE data", e);
+      }
+    });
+
+    eventSource.onerror = () => {
+      console.error("SSE connection error");
+      eventSource.close();
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, [refresh, selectedDate]);
 
   const enterCount = alerts.filter((a) => a.verdict === "ENTER").length;
   const skipCount  = alerts.filter((a) => a.verdict === "SKIP").length;
@@ -283,8 +309,8 @@ export default function AlertFeed() {
           justifyContent: "space-between",
         }}
       >
-        <span>{alerts.length} alert{alerts.length !== 1 ? "s" : ""} today</span>
-        <span>Auto-refreshes every 10s</span>
+        <span>{alerts.length} alert{alerts.length !== 1 ? "s" : ""} on {selectedDate}</span>
+        <span>{selectedDate === new Date().toLocaleDateString("en-CA") ? "Live stream active" : "Historical view"}</span>
       </div>
     </div>
   );

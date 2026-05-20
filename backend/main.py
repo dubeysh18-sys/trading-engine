@@ -16,8 +16,11 @@ import pytz
 from datetime import datetime
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
+import json
+import asyncio
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
@@ -26,7 +29,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from database import init_db, get_db, Alert, BacktestResult
 from upstox_client import get_historical_data, get_ltp, resolve_instrument_key
 from logic_engine import evaluate_rules, get_indicator_snapshot
-from backtest import run_backtest
+from backtest import run_backtest, track_live_trades
+
+# SSE Clients
+clients = []
 
 load_dotenv()
 
@@ -43,13 +49,20 @@ scheduler = BackgroundScheduler(timezone=IST)
 
 
 def _scheduled_backtest():
-    """Triggered at 15:30 IST on market days."""
-    logger.info("Scheduled backtest starting at 15:30 IST...")
+    """Triggered at 15:30 IST on market days to clean up any remaining trades."""
+    logger.info("Scheduled backtest (EOD square-off) starting at 15:30 IST...")
     try:
         result = run_backtest()
         logger.info(f"Scheduled backtest done: {result}")
     except Exception as e:
         logger.error(f"Scheduled backtest failed: {e}")
+
+def _live_tracker():
+    """Triggered every 1 minute during market hours."""
+    try:
+        track_live_trades()
+    except Exception as e:
+        logger.error(f"Live tracker failed: {e}")
 
 
 # ── App Lifecycle ──────────────────────────────────────────────────────────────
@@ -65,8 +78,16 @@ async def lifespan(app: FastAPI):
         day_of_week="mon-fri",
         id="eod_backtest"
     )
+    # Schedule Live Tracker every minute between 9:15 and 15:30
+    scheduler.add_job(
+        _live_tracker,
+        trigger="cron",
+        hour="9-15", minute="*",
+        day_of_week="mon-fri",
+        id="live_tracker"
+    )
     scheduler.start()
-    logger.info("APScheduler started — EOD backtest scheduled at 15:30 IST (Mon-Fri)")
+    logger.info("APScheduler started — Live tracking active. EOD backtest at 15:30.")
     yield
     scheduler.shutdown(wait=False)
     logger.info("Scheduler stopped.")
@@ -207,8 +228,22 @@ def _process_alerts(
                     verdict_reason= result["verdict_reason"],
                 )
                 db.add(alert)
+                
+                # If ENTER, immediately create a PENDING backtest result for live tracking
+                if alert.verdict == "ENTER":
+                    db.flush() # get alert id
+                    from backtest import create_pending_trade
+                    create_pending_trade(alert, db)
+                
                 db.commit()
                 logger.info(f"  {stock}: {result['verdict']} | {result['verdict_reason']}")
+                
+                # Push to SSE clients
+                serialized = _serialize_alert(alert)
+                asyncio.run_coroutine_threadsafe(
+                    broadcast_event("new_alert", serialized),
+                    asyncio.get_running_loop()
+                )
 
             except Exception as e:
                 logger.error(f"Error processing {stock}: {e}")
@@ -217,15 +252,20 @@ def _process_alerts(
     finally:
         db.close()
 
+async def broadcast_event(event_type: str, data: dict):
+    message = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    for q in clients:
+        await q.put(message)
+
 
 # ── Alert Feed ─────────────────────────────────────────────────────────────────
 @app.get("/api/alerts")
-def get_alerts(db: Session = Depends(get_db)):
-    """Return today's alerts, newest first."""
-    today = datetime.now(IST).strftime("%Y-%m-%d")
+def get_alerts(date: str = Query(None), db: Session = Depends(get_db)):
+    """Return alerts for a specific date, newest first."""
+    query_date = date or datetime.now(IST).strftime("%Y-%m-%d")
     alerts = (
         db.query(Alert)
-        .filter(Alert.trigger_date == today)
+        .filter(Alert.trigger_date == query_date)
         .order_by(Alert.created_at.desc())
         .all()
     )
@@ -250,6 +290,24 @@ def _serialize_alert(a: Alert) -> dict:
         "verdict_reason":a.verdict_reason,
         "created_at":    a.created_at.isoformat() if a.created_at else None,
     }
+
+@app.get("/api/alerts/stream")
+async def alerts_stream():
+    """Server-Sent Events for instant UI updates."""
+    q = asyncio.Queue()
+    clients.append(q)
+    
+    async def event_generator():
+        try:
+            while True:
+                message = await q.get()
+                yield message
+        except asyncio.CancelledError:
+            pass
+        finally:
+            clients.remove(q)
+            
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 # ── NIFTY Status ───────────────────────────────────────────────────────────────
@@ -303,14 +361,14 @@ async def trigger_backtest(background_tasks: BackgroundTasks):
 
 
 @app.get("/api/backtest-results")
-def get_backtest_results(db: Session = Depends(get_db)):
-    """Return today's backtest results with summary stats."""
-    today = datetime.now(IST).strftime("%Y-%m-%d")
+def get_backtest_results(date: str = Query(None), db: Session = Depends(get_db)):
+    """Return backtest results with summary stats."""
+    query_date = date or datetime.now(IST).strftime("%Y-%m-%d")
 
     results = (
         db.query(BacktestResult, Alert)
         .join(Alert, BacktestResult.alert_id == Alert.id)
-        .filter(Alert.trigger_date == today)
+        .filter(Alert.trigger_date == query_date)
         .order_by(Alert.created_at.desc())
         .all()
     )
