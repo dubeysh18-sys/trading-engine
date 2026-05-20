@@ -269,7 +269,25 @@ export default function BacktestHub() {
               ? "var(--accent-red)"
               : "#94a3b8"
           }
-          sub="Average per trade"
+          sub="Average % per trade"
+        />
+        <StatCard
+          label="Net P&L (₹)"
+          value={
+            loading
+              ? "…"
+              : summary && summary.backtested > 0
+              ? `${summary.net_pnl_amount > 0 ? "+" : ""}₹${summary.net_pnl_amount.toLocaleString("en-IN")}`
+              : "—"
+          }
+          color={
+            summary && summary.net_pnl_amount > 0
+              ? "var(--accent-green)"
+              : summary && summary.net_pnl_amount < 0
+              ? "var(--accent-red)"
+              : "#94a3b8"
+          }
+          sub="50k × 4x leverage"
         />
       </div>
 
@@ -333,6 +351,8 @@ export default function BacktestHub() {
                 <th style={{ textAlign: "right" }}>Exit ₹</th>
                 <th>Outcome</th>
                 <th style={{ textAlign: "right" }}>P&L %</th>
+                <th style={{ textAlign: "right" }}>P&L ₹</th>
+                <th style={{ textAlign: "right" }}>Qty</th>
                 <th style={{ textAlign: "right" }}>Target ₹</th>
                 <th style={{ textAlign: "right" }}>SL ₹</th>
               </tr>
@@ -408,6 +428,18 @@ export default function BacktestHub() {
                         ? `${trade.pnl_pct > 0 ? "+" : ""}${trade.pnl_pct?.toFixed(2)}%`
                         : "—"}
                     </span>
+                  </td>
+
+                  <td style={{ textAlign: "right", fontFamily: "JetBrains Mono, monospace" }}>
+                    <span style={{ color: pnlColor(trade.pnl_amount), fontWeight: 600 }}>
+                      {trade.pnl_amount !== null && trade.pnl_amount !== undefined
+                        ? `${trade.pnl_amount > 0 ? "+" : ""}₹${Math.abs(trade.pnl_amount).toLocaleString("en-IN")}`
+                        : "—"}
+                    </span>
+                  </td>
+
+                  <td style={{ textAlign: "right", color: "#94a3b8", fontFamily: "JetBrains Mono, monospace" }}>
+                    {trade.quantity ?? "—"}
                   </td>
 
                   <td style={{ textAlign: "right", color: "#60a5fa", fontFamily: "JetBrains Mono, monospace" }}>

@@ -2,7 +2,7 @@
  * lib/api.ts — Typed fetch helpers for all backend endpoints
  */
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const API = process.env.NEXT_PUBLIC_API_URL || "https://trading-engine-58hz.onrender.com";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,6 +39,8 @@ export interface BacktestTrade {
   exit_price:  number | null;
   outcome:     "PROFIT" | "LOSS" | "FLAT" | null;
   pnl_pct:     number | null;
+  quantity:    number | null;
+  pnl_amount:  number | null;
   target:      number | null;
   stop_loss:   number | null;
 }
@@ -51,6 +53,7 @@ export interface BacktestSummary {
   flats:              number;
   win_rate_pct:       number;
   net_pnl_pct:        number;
+  net_pnl_amount:     number;
 }
 
 export interface BacktestResults {
