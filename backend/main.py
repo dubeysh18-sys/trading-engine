@@ -398,7 +398,7 @@ def get_backtest_results(date: str = Query(None), db: Session = Depends(get_db))
 
     # Total ENTER alerts today
     enter_count = db.query(Alert).filter(
-        Alert.trigger_date == today,
+        Alert.trigger_date == query_date,
         Alert.verdict == "ENTER"
     ).count()
 
