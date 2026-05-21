@@ -5,6 +5,12 @@ Takes a stock's OHLCV DataFrame + NIFTY data and returns:
   - Calculated indicators (VWAP, 9 EMA, Pivot Points, candle anatomy)
   - A verdict: ENTER | WAIT | SKIP
   - Entry price, target, stop loss
+
+The 4 Golden Rules (in priority order):
+  1. The Ceiling  — Skip if current price is within 0.3% below R1/R2/R3/Yesterday High
+  2. Market Wind  — Skip if NIFTY LTP < NIFTY VWAP
+  3. Base Camp    — Wait if current price > VWAP * 1.008 (overextended by >0.8%)
+  4. The Wick     — Skip if red candle OR upper wick > solid body (rejection)
 """
 
 import logging
@@ -182,10 +188,12 @@ def evaluate_rules(
         verdict        = "SKIP"
         verdict_reason = "Market Wind is against you (NIFTY below VWAP)"
 
-    # ── Rule 3: Base Camp (The "Kiss") ────────────────────────
-    elif ema9 and current_price > (ema9 * 1.01): # Arbitrary >1% gap above EMA9 is a spike
+    # ── Rule 3: Base Camp (Anti-FOMO Guard) ──────────────────
+    # Safety leash is tethered to VWAP at 0.8%. If the price is already
+    # >0.8% above VWAP the stock is overextended — wait for a pullback.
+    elif vwap and current_price > (vwap * 1.008):
         verdict        = "WAIT"
-        verdict_reason = "Base Camp: Vertical spike far above 9 EMA. Wait for pullback kiss."
+        verdict_reason = "Base Camp: Overextended >0.8% above VWAP. Wait for pullback to VWAP/9 EMA."
 
     # ── Rule 4: The Wick (Price Action) ───────────────────────
     elif upper_wick > solid_body:
@@ -209,14 +217,13 @@ def evaluate_rules(
             # If breaking out above all known ceilings, target +1.5%
             target = round(current_price * 1.015, 2)
 
-        # Stop Loss: MAX(VWAP - 0.1%, low of trigger candle, or EMA9)
-        vwap_sl = round(vwap * 0.999, 2) if vwap else None
-        candle_low_sl = indicators.get("latest_low")
-        ema_sl = round(ema9 * 0.999, 2) if ema9 else None
-        
-        possible_sls = [val for val in (vwap_sl, candle_low_sl, ema_sl) if val is not None]
+        # Stop Loss: min(VWAP, candle low) — the lower of the two gives the
+        # tightest meaningful floor. If price breaks below VWAP or the trigger
+        # candle's low, the breakout has failed.
+        candle_low = indicators.get("latest_low")
+        possible_sls = [val for val in (vwap, candle_low) if val is not None]
         if possible_sls:
-            stop_loss = round(max(possible_sls), 2)
+            stop_loss = round(min(possible_sls), 2)
         else:
             stop_loss = round(current_price * 0.99, 2) # fallback 1%
 
