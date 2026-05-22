@@ -63,22 +63,31 @@ def _save_instrument_cache():
 
 def _fetch_instrument_master():
     """
-    Download Upstox NSE_EQ instrument master and build a
+    Download Upstox NSE_EQ instrument master (gzip JSON) and build a
     trading_symbol → instrument_key lookup dictionary.
-    The master is ~3MB JSON so we cache it to disk.
+    The master is ~3MB gzip so we cache it to disk.
     """
     global _instrument_cache
-    logger.info("Downloading Upstox NSE_EQ instrument master...")
+    logger.info("Downloading Upstox NSE_EQ instrument master (gzip)...")
     url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
 
-    instruments = resp.json()
+    # Decompress gzip manually — the server may not set Content-Encoding
+    import gzip, io
+    raw = resp.content
+    try:
+        decompressed = gzip.decompress(raw)
+    except Exception:
+        # Already plain JSON (shouldn't happen, but handle gracefully)
+        decompressed = raw
+
+    instruments = json.loads(decompressed.decode("utf-8"))
     new_cache = {}
     for instr in instruments:
-        symbol = instr.get("trading_symbol", "")
-        key    = instr.get("instrument_key", "")
-        itype  = instr.get("instrument_type", "")
+        symbol  = instr.get("trading_symbol", "")
+        key     = instr.get("instrument_key", "")
+        itype   = instr.get("instrument_type", "")
         segment = instr.get("segment", "")
         # Only equity cash segment
         if segment == "NSE_EQ" and itype == "EQ" and symbol and key:
