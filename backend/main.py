@@ -15,6 +15,7 @@ import os
 import pytz
 from datetime import datetime
 from contextlib import asynccontextmanager
+from collections import deque
 
 import json
 import asyncio
@@ -31,6 +32,18 @@ from upstox_client import get_historical_data, get_ltp, resolve_instrument_key
 from logic_engine import evaluate_rules, get_indicator_snapshot
 from backtest import run_backtest, track_live_trades
 
+# In-memory debug log ring buffer (last 200 entries)
+_debug_log: deque = deque(maxlen=200)
+
+class _DebugHandler(logging.Handler):
+    """Captures log records into the in-memory ring buffer for /api/debug-log."""
+    def emit(self, record: logging.LogRecord):
+        _debug_log.append({
+            "time": datetime.utcnow().isoformat() + "Z",
+            "level": record.levelname,
+            "msg": self.format(record),
+        })
+
 # SSE Clients
 clients = []
 
@@ -41,6 +54,11 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Attach debug handler to root logger so all modules are captured
+_dh = _DebugHandler()
+_dh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+logging.getLogger().addHandler(_dh)
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -68,7 +86,9 @@ def _live_tracker():
 # ── App Lifecycle ──────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _main_event_loop
     logger.info("Starting Trading Rule Engine...")
+    _main_event_loop = asyncio.get_running_loop()  # capture loop for background threads
     init_db()
     # Schedule EOD backtest at 15:30 IST, Mon-Fri
     scheduler.add_job(
@@ -129,6 +149,19 @@ def health_check():
     return {"status": "ok", "time": datetime.now(IST).isoformat()}
 
 
+# ── Debug Log ──────────────────────────────────────────────────────────────────
+@app.get("/api/debug-log")
+def get_debug_log(level: str = Query(None)):
+    """
+    Returns the last 200 in-memory log entries for live debugging.
+    Filter by level: ?level=ERROR or ?level=WARNING
+    """
+    logs = list(_debug_log)
+    if level:
+        logs = [l for l in logs if l["level"] == level.upper()]
+    return {"count": len(logs), "logs": logs[-100:]}
+
+
 # ── Webhook Receiver ───────────────────────────────────────────────────────────
 @app.post("/api/webhook/chartink")
 async def receive_chartink_alert(
@@ -153,7 +186,12 @@ async def receive_chartink_alert(
             price = None
         stock_price_map[stock] = price
 
-    trigger_time  = payload.triggered_at or datetime.now(IST).strftime("%-I:%M %p")
+    # Use %-I on Linux (no zero-pad), fall back to %I for Windows/other platforms
+    try:
+        _time_fmt = datetime.now(IST).strftime("%-I:%M %p")
+    except ValueError:
+        _time_fmt = datetime.now(IST).strftime("%I:%M %p").lstrip("0")
+    trigger_time  = payload.triggered_at or _time_fmt
     trigger_date  = datetime.now(IST).strftime("%Y-%m-%d")
     scan_name     = payload.scan_name or "Unknown Scan"
     alert_name    = payload.alert_name or ""
@@ -174,6 +212,10 @@ async def receive_chartink_alert(
     }
 
 
+# Global reference to the main event loop, set on startup
+_main_event_loop: asyncio.AbstractEventLoop | None = None
+
+
 def _process_alerts(
     stock_price_map: dict,
     trigger_time: str,
@@ -188,22 +230,39 @@ def _process_alerts(
     try:
         # Pre-fetch NIFTY data once for all stocks in this batch
         logger.info("Fetching NIFTY 5-min data...")
+        nifty_df = None
+        nifty_fetch_error = None
         try:
             nifty_df = get_historical_data("NIFTY50", days=3)
         except Exception as e:
+            nifty_fetch_error = str(e)
             logger.error(f"NIFTY data fetch failed: {e}")
-            nifty_df = None
 
         for stock, trigger_price in stock_price_map.items():
+            alert = None
             try:
                 logger.info(f"Processing {stock} @ ₹{trigger_price}...")
 
-                stock_df = get_historical_data(stock, days=3)
-                result   = evaluate_rules(
-                    stock_df=stock_df,
-                    nifty_df=nifty_df if nifty_df is not None else stock_df,
-                    trigger_price=trigger_price
-                )
+                try:
+                    stock_df = get_historical_data(stock, days=3)
+                    result   = evaluate_rules(
+                        stock_df=stock_df,
+                        nifty_df=nifty_df if nifty_df is not None else stock_df,
+                        trigger_price=trigger_price
+                    )
+                except Exception as fetch_err:
+                    # ── Fault-tolerant fallback ──────────────────────────────
+                    # Save the alert as ERROR so the dashboard always shows it
+                    logger.error(f"Data fetch/rule eval failed for {stock}: {fetch_err}")
+                    result = {
+                        "verdict": "ERROR",
+                        "verdict_reason": f"Data unavailable: {fetch_err}",
+                        "entry": None, "target": None, "stop_loss": None,
+                        "vwap": None, "ema9": None,
+                        "pivot_r1": None, "pivot_r2": None, "pivot_s1": None,
+                        "upper_wick": None, "solid_body": None,
+                        "nifty_ltp": None, "nifty_vwap": None,
+                    }
 
                 alert = Alert(
                     scan_name     = scan_name,
@@ -228,25 +287,26 @@ def _process_alerts(
                     verdict_reason= result["verdict_reason"],
                 )
                 db.add(alert)
-                
+
                 # If ENTER, immediately create a PENDING backtest result for live tracking
                 if alert.verdict == "ENTER":
-                    db.flush() # get alert id
+                    db.flush()  # get alert id
                     from backtest import create_pending_trade
                     create_pending_trade(alert, db)
-                
+
                 db.commit()
-                logger.info(f"  {stock}: {result['verdict']} | {result['verdict_reason']}")
-                
-                # Push to SSE clients
+                logger.info(f"  ✓ Saved {stock}: {result['verdict']} | {result['verdict_reason']}")
+
+                # ── Push to SSE clients (thread-safe) ──────────────────────
                 serialized = _serialize_alert(alert)
-                asyncio.run_coroutine_threadsafe(
-                    broadcast_event("new_alert", serialized),
-                    asyncio.get_running_loop()
-                )
+                if _main_event_loop and not _main_event_loop.is_closed():
+                    asyncio.run_coroutine_threadsafe(
+                        broadcast_event("new_alert", serialized),
+                        _main_event_loop
+                    )
 
             except Exception as e:
-                logger.error(f"Error processing {stock}: {e}")
+                logger.error(f"Error saving alert for {stock}: {e}", exc_info=True)
                 db.rollback()
 
     finally:
