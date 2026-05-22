@@ -101,6 +101,81 @@ def track_live_trades():
     finally:
         db.close()
 
+def monitor_wait_pullbacks():
+    """Fetches LTP and last closed 5-min candle for WAIT alerts to check for pullbacks."""
+    logger.info("Running 1-minute pullback watcher for WAIT stocks...")
+    from database import SessionLocal, Alert
+    from upstox_client import get_historical_data, get_ltp
+    from logic_engine import calculate_vwap, evaluate_wait_upgrade
+    from main import _main_event_loop, broadcast_event, _serialize_alert
+    import asyncio
+    
+    db = SessionLocal()
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        
+        wait_alerts = db.query(Alert).filter(
+            Alert.trigger_date == today,
+            Alert.verdict == "WAIT"
+        ).all()
+        
+        if not wait_alerts:
+            return
+            
+        for alert in wait_alerts:
+            try:
+                # 1. Fetch live price
+                ltp = get_ltp(alert.stock)
+                if not ltp: continue
+                
+                # 2. Fetch today's 5-minute data
+                df = get_historical_data(alert.stock, days=1)
+                if df is None or len(df) < 2: continue
+                
+                # 3. Calculate VWAP
+                df["vwap"] = calculate_vwap(df)
+                
+                # 4. Get last CLOSED candle
+                # We drop the very last row assuming it's the currently forming 5-min candle
+                last_closed = df.iloc[-2]
+                
+                # 5. Evaluate upgrade
+                result = evaluate_wait_upgrade(last_closed, ltp)
+                status = result.get("status")
+                
+                if status in ("ENTER", "SKIP"):
+                    alert.verdict = status
+                    alert.verdict_reason = result.get("reason", "")
+                    
+                    if status == "ENTER":
+                        alert.entry_price = result["entry_price"]
+                        alert.stop_loss = result["stop_loss"]
+                        # 1:2 R:R Target
+                        alert.target = round(alert.entry_price + ((alert.entry_price - alert.stop_loss) * 2), 2)
+                        
+                        logger.info(f"UPGRADED {alert.stock} from WAIT to ENTER at {alert.entry_price}")
+                        db.commit() # commit alert changes first
+                        create_pending_trade(alert, db)
+                    else:
+                        logger.info(f"DOWNGRADED {alert.stock} from WAIT to SKIP (Cancelled)")
+                        db.commit()
+
+                    # Push SSE event to update UI instantly
+                    serialized = _serialize_alert(alert)
+                    if _main_event_loop and not _main_event_loop.is_closed():
+                        asyncio.run_coroutine_threadsafe(
+                            broadcast_event("new_alert", serialized),
+                            _main_event_loop
+                        )
+
+            except Exception as e:
+                logger.error(f"Error checking pullback for {alert.stock}: {e}")
+                
+    except Exception as e:
+        logger.error(f"Pullback watcher top-level error: {e}")
+    finally:
+        db.close()
+
 def run_backtest(date_str: str | None = None) -> dict:
     """
     Run backtest for all ENTER alerts on a given date.

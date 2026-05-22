@@ -83,6 +83,15 @@ def _live_tracker():
         logger.error(f"Live tracker failed: {e}")
 
 
+def _pullback_watcher():
+    """Triggered every 1 minute to check WAIT stocks for pullbacks."""
+    try:
+        from backtest import monitor_wait_pullbacks
+        monitor_wait_pullbacks()
+    except Exception as e:
+        logger.error(f"Pullback watcher failed: {e}")
+
+
 # ── App Lifecycle ──────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -106,8 +115,17 @@ async def lifespan(app: FastAPI):
         day_of_week="mon-fri",
         id="live_tracker"
     )
+    # Schedule Pullback Watcher every minute between 9:15 and 15:30
+    scheduler.add_job(
+        _pullback_watcher,
+        trigger="cron",
+        hour="9-15", minute="*",
+        day_of_week="mon-fri",
+        id="pullback_watcher"
+    )
     scheduler.start()
-    logger.info("APScheduler started — Live tracking active. EOD backtest at 15:30.")
+    logger.info("APScheduler started — Live tracking & Pullback Watcher active. EOD backtest at 15:30.")
+
     yield
     scheduler.shutdown(wait=False)
     logger.info("Scheduler stopped.")
