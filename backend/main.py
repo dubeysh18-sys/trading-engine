@@ -480,3 +480,79 @@ def get_backtest_results(date: str = Query(None), db: Session = Depends(get_db))
         },
         "trades": trades
     }
+
+
+# ── Admin / Recovery ───────────────────────────────────────────────────────────
+
+@app.post("/api/admin/reprocess-errors")
+async def reprocess_error_alerts(
+    background_tasks: BackgroundTasks,
+    date: str = Query(None),
+    db: Session = Depends(get_db)
+):
+    """
+    Re-run rule evaluation for all ERROR alerts on a given date.
+    Use this after fixing UPSTOX_ACCESS_TOKEN to recover missed verdicts.
+    """
+    query_date = date or datetime.now(IST).strftime("%Y-%m-%d")
+    error_alerts = (
+        db.query(Alert)
+        .filter(Alert.trigger_date == query_date, Alert.verdict == "ERROR")
+        .all()
+    )
+
+    if not error_alerts:
+        return {"status": "nothing_to_reprocess", "date": query_date, "count": 0}
+
+    # Rebuild the stock_price_map grouped by scan+time
+    stock_price_map = {a.stock: a.trigger_price for a in error_alerts}
+    scan_name   = error_alerts[0].scan_name
+    alert_name  = error_alerts[0].alert_name
+    trigger_time = error_alerts[0].trigger_time
+
+    # Delete ERROR records so _process_alerts can insert fresh ones
+    for a in error_alerts:
+        db.delete(a)
+    db.commit()
+
+    background_tasks.add_task(
+        _process_alerts,
+        stock_price_map, trigger_time, query_date, scan_name, alert_name
+    )
+
+    logger.info(f"Reprocessing {len(error_alerts)} ERROR alerts for {query_date}")
+    return {
+        "status": "reprocessing",
+        "date": query_date,
+        "count": len(error_alerts),
+        "stocks": list(stock_price_map.keys()),
+        "message": "Check /api/alerts in ~30 seconds for updated verdicts"
+    }
+
+
+@app.delete("/api/admin/clear-date")
+def clear_alerts_for_date(
+    date: str = Query(..., description="Date to clear, e.g. 2026-05-22"),
+    verdict: str = Query(None, description="Only delete alerts with this verdict, e.g. ERROR"),
+    db: Session = Depends(get_db)
+):
+    """
+    Delete all alerts (and backtest results) for a given date.
+    Optionally filter by verdict=ERROR to only remove garbage data.
+    """
+    query = db.query(Alert).filter(Alert.trigger_date == date)
+    if verdict:
+        query = query.filter(Alert.verdict == verdict.upper())
+
+    alerts = query.all()
+    count = len(alerts)
+
+    for alert in alerts:
+        if alert.backtest_result:
+            db.delete(alert.backtest_result)
+        db.delete(alert)
+    db.commit()
+
+    logger.info(f"Admin cleared {count} alerts for {date} (verdict filter: {verdict})")
+    return {"status": "cleared", "date": date, "deleted_count": count, "verdict_filter": verdict}
+
