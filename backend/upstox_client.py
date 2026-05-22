@@ -141,22 +141,35 @@ def get_historical_data(symbol: str, days: int = 3) -> pd.DataFrame:
     resp = requests.get(url, headers=_headers(), timeout=15)
     resp.raise_for_status()
 
-    data = resp.json()
+    # Guard against empty or non-JSON response body
+    raw_text = resp.text.strip()
+    if not raw_text:
+        logger.error(f"Upstox returned empty body for {symbol} — instrument key may be wrong: {instrument_key}")
+        raise ValueError(f"Empty response from Upstox for {symbol}. Check instrument key.")
+
+    try:
+        data = resp.json()
+    except Exception as json_err:
+        logger.error(f"Upstox JSON parse failed for {symbol}: {json_err} | body: {raw_text[:200]}")
+        raise ValueError(f"Invalid JSON from Upstox for {symbol}: {json_err}")
+
     candles = data.get("data", {}).get("candles", [])
 
     if not candles:
-        logger.warning(f"No historical data returned for {symbol}")
+        logger.warning(f"No historical candles returned for {symbol} (key={instrument_key})")
         return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
 
     df = pd.DataFrame(
         candles,
         columns=["timestamp", "open", "high", "low", "close", "volume", "oi"]
     )
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    # Parse timestamps — Upstox returns ISO8601 with timezone offset (+05:30)
+    # Strip tz-info so all downstream comparisons use naive datetimes consistently
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_localize(None)
     df = df[["timestamp", "open", "high", "low", "close", "volume"]]
     df = df.sort_values("timestamp").reset_index(drop=True)
 
-    # Keep only last `days` trading days
+    # Keep only last `days` trading days (naive cutoff, matches stripped timestamps)
     cutoff = (datetime.now() - timedelta(days=days + 1)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
