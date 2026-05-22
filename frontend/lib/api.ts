@@ -61,6 +61,19 @@ export interface BacktestResults {
   trades:  BacktestTrade[];
 }
 
+// ── Live Price Types ──────────────────────────────────────────────────────────
+
+export interface LivePrice {
+  stock:       string;
+  alert_id:    number;
+  entry_price: number | null;
+  target:      number | null;
+  stop_loss:   number | null;
+  ltp:         number | null;
+  pnl_pct:     number | null;
+  status:      "ACTIVE" | "PROFIT" | "LOSS" | "FLAT" | "PENDING";
+}
+
 // ── Fetch Helpers ─────────────────────────────────────────────────────────────
 
 export async function fetchAlerts(date?: string): Promise<Alert[]> {
@@ -73,6 +86,15 @@ export async function fetchAlerts(date?: string): Promise<Alert[]> {
 export async function fetchNiftyStatus(): Promise<NiftyStatus> {
   const res = await fetch(`${API}/api/nifty-status`, { cache: "no-store" });
   if (!res.ok) throw new Error(`NIFTY status fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function fetchLivePrices(date?: string): Promise<LivePrice[]> {
+  const url = date
+    ? `${API}/api/alerts/live-prices?date=${date}`
+    : `${API}/api/alerts/live-prices`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) return [];
   return res.json();
 }
 
@@ -91,3 +113,5 @@ export async function triggerBacktest(): Promise<{ status: string; message: stri
   if (!res.ok) throw new Error(`Backtest trigger failed: ${res.status}`);
   return res.json();
 }
+
+export { API };

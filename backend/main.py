@@ -370,6 +370,61 @@ async def alerts_stream():
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+# ── Live Price Tracker ──────────────────────────────────────────────────────────
+@app.get("/api/alerts/live-prices")
+def get_live_prices(date: str = Query(None), db: Session = Depends(get_db)):
+    """
+    For all ENTER alerts on a date, return the current LTP + P&L status.
+    Used by the frontend to show live trade progress bars and P&L.
+    """
+    query_date = date or datetime.now(IST).strftime("%Y-%m-%d")
+    enter_alerts = (
+        db.query(Alert)
+        .filter(Alert.trigger_date == query_date, Alert.verdict == "ENTER")
+        .all()
+    )
+
+    result = []
+    for alert in enter_alerts:
+        ltp = None
+        pnl_pct = None
+        status = "PENDING"
+
+        # Check if a finalized backtest result exists
+        bt = alert.backtest_result
+        if bt and bt.outcome not in ("PENDING", None):
+            status = bt.outcome  # PROFIT | LOSS | FLAT
+            ltp = bt.exit_price
+            pnl_pct = bt.pnl_pct
+        else:
+            # Still active — fetch live LTP
+            try:
+                ltp = get_ltp(alert.stock)
+                if ltp and alert.entry_price:
+                    pnl_pct = round((ltp - alert.entry_price) / alert.entry_price * 100, 2)
+                    if alert.target and ltp >= alert.target:
+                        status = "PROFIT"
+                    elif alert.stop_loss and ltp <= alert.stop_loss:
+                        status = "LOSS"
+                    else:
+                        status = "ACTIVE"
+            except Exception as e:
+                logger.warning(f"live-prices: could not fetch LTP for {alert.stock}: {e}")
+
+        result.append({
+            "stock":       alert.stock,
+            "alert_id":    alert.id,
+            "entry_price": alert.entry_price,
+            "target":      alert.target,
+            "stop_loss":   alert.stop_loss,
+            "ltp":         ltp,
+            "pnl_pct":     pnl_pct,
+            "status":      status,
+        })
+
+    return result
+
+
 # ── NIFTY Status ───────────────────────────────────────────────────────────────
 @app.get("/api/nifty-status")
 def nifty_status(db: Session = Depends(get_db)):

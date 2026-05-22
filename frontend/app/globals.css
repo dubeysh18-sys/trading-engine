@@ -108,11 +108,26 @@ html, body {
   border: 1px solid rgba(255, 77, 77, 0.3);
 }
 
+.pill-error {
+  background: rgba(100, 100, 100, 0.12);
+  color: #6b7280;
+  border: 1px solid rgba(100, 100, 100, 0.25);
+}
+
 .pill-pending {
   background: rgba(148, 163, 184, 0.1);
   color: var(--text-secondary);
   border: 1px solid rgba(148, 163, 184, 0.2);
 }
+
+/* ENTER rows get a green left glow on hover */
+.data-table tr[style*="3px solid var(--accent-green)"]:hover td {
+  background: rgba(0, 208, 132, 0.04);
+}
+.data-table tr[style*="3px solid var(--accent-yellow)"]:hover td {
+  background: rgba(251, 191, 36, 0.04);
+}
+
 
 /* ── Cards ──────────────────────────────────────────────────── */
 .card {

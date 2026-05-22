@@ -27,9 +27,9 @@ const CONFIG: Record<VerdictType, { label: string; className: string; dot: strin
     dot: "bg-red-400",
   },
   ERROR: {
-    label: "ERROR",
-    className: "pill pill-pending",
-    dot: "bg-gray-400",
+    label: "ERR",
+    className: "pill pill-error",
+    dot: "bg-gray-500",
   },
   PENDING: {
     label: "...",
