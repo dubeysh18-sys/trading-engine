@@ -1,17 +1,23 @@
+databases:
+  - name: trading-db
+    databaseName: trading_engine
+    plan: free
+
 services:
   - type: web
     name: trading-engine-backend
     env: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: UPSTOX_ACCESS_TOKEN
-        sync: false          # Set this manually in Render dashboard
+        sync: false          # Set manually in Render dashboard → Environment
       - key: CORS_ORIGINS
-        sync: false          # Set to your Vercel URL e.g. https://trading-engine.vercel.app
+        sync: false          # e.g. https://playful-snickerdoodle-29868c.netlify.app
       - key: DATABASE_URL
-        value: sqlite:///./trading.db
-    disk:
-      name: trading-db
-      mountPath: /opt/render/project/src
-      sizeGB: 1
+        fromDatabase:
+          name: trading-db
+          property: connectionString   # Render injects the live PostgreSQL URL here
+      - key: APP_ENV
+        value: production

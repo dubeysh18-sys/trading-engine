@@ -1,12 +1,18 @@
 """
 database.py — SQLAlchemy models and session management
+
+Supports both:
+  - PostgreSQL (production on Render) via DATABASE_URL = postgres://...
+  - SQLite    (local dev)            via DATABASE_URL = sqlite:///./trading.db
+
+CRITICAL: SQLite is ephemeral on Render's free tier — always use PostgreSQL in production.
 """
 
 import os
 from datetime import datetime
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float,
-    DateTime, ForeignKey, Text
+    DateTime, ForeignKey, Text, event
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from dotenv import load_dotenv
@@ -15,26 +21,57 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./trading.db")
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
-)
+# Render and some providers return "postgres://" but SQLAlchemy 2.x requires "postgresql://"
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+IS_SQLITE = DATABASE_URL.startswith("sqlite")
+
+# ── Engine ─────────────────────────────────────────────────────────────────────
+if IS_SQLITE:
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        echo=False,
+    )
+    # Enable WAL mode for better concurrent reads on SQLite
+    @event.listens_for(engine, "connect")
+    def set_sqlite_pragma(dbapi_conn, _):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.close()
+else:
+    engine = create_engine(
+        DATABASE_URL,
+        pool_size=5,
+        max_overflow=10,
+        pool_pre_ping=True,           # auto-reconnect on stale connections
+        pool_recycle=300,             # recycle connections every 5 min
+        connect_args={
+            "sslmode": "require",     # Render PostgreSQL requires SSL
+            "connect_timeout": 10,
+        },
+        echo=False,
+    )
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+
+# ── Models ─────────────────────────────────────────────────────────────────────
 
 class Alert(Base):
     """Stores each stock alert received from Chartink after rule evaluation."""
     __tablename__ = "alerts"
 
-    id           = Column(Integer, primary_key=True, index=True)
-    scan_name    = Column(String(200), nullable=True)
-    alert_name   = Column(String(200), nullable=True)
-    stock        = Column(String(20), nullable=False)
-    trigger_time = Column(String(20), nullable=False)   # "2:34 pm" as received
-    trigger_date = Column(String(20), nullable=False)   # "YYYY-MM-DD"
+    id            = Column(Integer, primary_key=True, index=True)
+    scan_name     = Column(String(200), nullable=True)
+    alert_name    = Column(String(200), nullable=True)
+    stock         = Column(String(20),  nullable=False)
+    trigger_time  = Column(String(20),  nullable=False)   # "2:34 pm"
+    trigger_date  = Column(String(20),  nullable=False)   # "YYYY-MM-DD"
 
-    # Indicator snapshot at time of alert
     trigger_price = Column(Float, nullable=True)
     entry_price   = Column(Float, nullable=True)
     target        = Column(Float, nullable=True)
@@ -49,12 +86,11 @@ class Alert(Base):
     nifty_ltp     = Column(Float, nullable=True)
     nifty_vwap    = Column(Float, nullable=True)
 
-    verdict       = Column(String(100), nullable=False, default="PENDING")
+    verdict        = Column(String(100), nullable=False, default="PENDING")
     verdict_reason = Column(Text, nullable=True)
 
-    created_at    = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
-    # Relationship to backtest result
     backtest_result = relationship("BacktestResult", back_populates="alert", uselist=False)
 
 
@@ -65,19 +101,21 @@ class BacktestResult(Base):
     id          = Column(Integer, primary_key=True, index=True)
     alert_id    = Column(Integer, ForeignKey("alerts.id"), unique=True, nullable=False)
 
-    entry_time  = Column(String(20), nullable=True)
-    entry_price = Column(Float, nullable=True)
-    exit_time   = Column(String(20), nullable=True)
-    exit_price  = Column(Float, nullable=True)
-    outcome     = Column(String(20), nullable=True)   # PROFIT | LOSS | FLAT
-    pnl_pct     = Column(Float, nullable=True)        # e.g. 1.25 means +1.25%
-    quantity    = Column(Integer, nullable=True)      # Shares bought (50k * 4x / entry_price)
-    pnl_amount  = Column(Float, nullable=True)        # Absolute P&L in ₹
+    entry_time  = Column(String(20),  nullable=True)
+    entry_price = Column(Float,       nullable=True)
+    exit_time   = Column(String(20),  nullable=True)
+    exit_price  = Column(Float,       nullable=True)
+    outcome     = Column(String(20),  nullable=True)   # PROFIT | LOSS | FLAT | PENDING
+    pnl_pct     = Column(Float,       nullable=True)
+    quantity    = Column(Integer,     nullable=True)
+    pnl_amount  = Column(Float,       nullable=True)
 
     created_at  = Column(DateTime, default=datetime.utcnow)
 
     alert = relationship("Alert", back_populates="backtest_result")
 
+
+# ── Session Dependency ────────────────────────────────────────────────────────
 
 def get_db():
     """FastAPI dependency — yields a DB session and closes it when done."""
@@ -89,5 +127,9 @@ def get_db():
 
 
 def init_db():
-    """Create all tables on startup."""
+    """
+    Create all tables if they don't exist.
+    Uses CREATE TABLE IF NOT EXISTS — safe to call on every startup,
+    never drops data, never resets sequences.
+    """
     Base.metadata.create_all(bind=engine)
