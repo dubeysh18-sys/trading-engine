@@ -147,9 +147,11 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
   const augmentedTrades = trades.map(t => {
     if (t.outcome === "PENDING" && livePrices[t.stock]) {
       const ltp = livePrices[t.stock].ltp;
-      const pct = t.entry_price ? (ltp - t.entry_price) / t.entry_price * 100 : 0;
-      const amt = (t.quantity || 0) * (ltp - (t.entry_price || 0));
-      return { ...t, live_pnl_pct: pct, live_pnl_amt: amt, ltp };
+      if (ltp !== null) {
+        const pct = t.entry_price ? (ltp - t.entry_price) / t.entry_price * 100 : 0;
+        const amt = (t.quantity || 0) * (ltp - (t.entry_price || 0));
+        return { ...t, live_pnl_pct: pct, live_pnl_amt: amt, ltp };
+      }
     }
     return t;
   });
