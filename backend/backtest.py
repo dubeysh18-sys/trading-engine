@@ -333,10 +333,9 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
         )
         stop_loss = round(entry_price * 0.995, 2)
 
-    # Fetch 5-min data for the alert date
-    # Use days=2 to ensure we have the full alert day even after weekend gaps
+    # Fetch 5-min data for the alert date (days=1, cutoff handles weekend gaps)
     try:
-        df = get_historical_data(alert.stock, days=2, end_date_str=alert.trigger_date)
+        df = get_historical_data(alert.stock, days=1, end_date_str=alert.trigger_date)
     except Exception as e:
         logger.error(f"Could not fetch data for {alert.stock}: {e}")
         return None
@@ -345,13 +344,13 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
         return None
 
     # ── CRITICAL: Filter to ONLY the alert date ───────────────────────────────
-    # Without this, candles from the previous trading day's 15:00-15:20 window
-    # (e.g. Friday) would be mixed with the alert day's candles (e.g. Monday),
-    # causing phantom SL/Target hits from the wrong day's price action.
-    from datetime import datetime as _dt
-    alert_date_obj = _dt.strptime(alert.trigger_date, "%Y-%m-%d").date()
-    df["date_only"] = df["timestamp"].dt.date
-    df = df[df["date_only"] == alert_date_obj].reset_index(drop=True)
+    # Without this, candles from the previous trading day's 15:00-15:20 time window
+    # (e.g. Friday) could mix with the alert day's candles (e.g. Monday), causing
+    # phantom SL/Target hits from the wrong day's price action.
+    #
+    # We use strftime string comparison (not .dt.date) for pandas version safety.
+    df["date_str"] = df["timestamp"].dt.strftime("%Y-%m-%d")
+    df = df[df["date_str"] == alert.trigger_date].reset_index(drop=True)
 
     if df.empty:
         logger.warning(f"No candles found for {alert.stock} on {alert.trigger_date}")

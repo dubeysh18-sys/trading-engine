@@ -741,9 +741,15 @@ def get_backtest_results(date: str = Query(None), db: Session = Depends(get_db))
 @app.post("/api/admin/run-recovery")
 def run_production_recovery(db: Session = Depends(get_db)):
     """
-    Retrospectively re-simulates all historical trades.
-    Deletes all old backtest results and re-runs the backtest simulation
-    for all unique alert dates in the database.
+    Retrospectively re-simulates historical trades.
+    
+    SAFE MODE: Only deletes PENDING results for re-simulation.
+    Finalized results (PROFIT/LOSS/FLAT) from the live tracker are
+    NEVER deleted — they are the source of truth for same-day trades.
+    
+    If force=true query param is passed, ALL results are deleted and
+    re-simulated (use only when you're sure historical candle data is
+    available, i.e. NOT on the same trading day after market close).
     """
     logger.info("Admin recovery: starting retrospective backtest...")
     try:
@@ -754,10 +760,12 @@ def run_production_recovery(db: Session = Depends(get_db)):
         
         logger.info(f"Admin recovery: Found unique dates: {dates}")
         
-        # Delete all existing BacktestResult records to force full re-simulation
-        deleted_count = db.query(BacktestResult).delete()
+        # Only delete PENDING results — preserve finalized trades from live tracker
+        pending_deleted = db.query(BacktestResult).filter(
+            BacktestResult.outcome == "PENDING"
+        ).delete()
         db.commit()
-        logger.info(f"Admin recovery: Deleted {deleted_count} old backtest results.")
+        logger.info(f"Admin recovery: Deleted {pending_deleted} PENDING backtest results.")
         
         results = {}
         for date_str in dates:
@@ -772,6 +780,59 @@ def run_production_recovery(db: Session = Depends(get_db)):
         logger.error(f"Admin recovery failed: {e}")
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/force-recovery")
+def force_recovery(date: str = Query(None), db: Session = Depends(get_db)):
+    """
+    Force-delete ALL backtest results for a specific date and re-simulate.
+    Only use this for PAST dates where Upstox historical candle data is
+    guaranteed to be available (i.e., not the current trading day after hours).
+    """
+    if not date:
+        raise HTTPException(status_code=400, detail="date query param is required (YYYY-MM-DD)")
+    
+    logger.info(f"Force recovery for date: {date}")
+    try:
+        # Delete only this date's results
+        deleted = db.query(BacktestResult).join(Alert).filter(
+            Alert.trigger_date == date
+        ).delete(synchronize_session="fetch")
+        db.commit()
+        logger.info(f"Force recovery: Deleted {deleted} results for {date}")
+        
+        res = run_backtest(date)
+        return {"status": "success", "date": date, "deleted": deleted, "result": res}
+    except Exception as e:
+        logger.error(f"Force recovery failed: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/admin/restore-missing")
+def restore_missing_records(date: str = Query(None), db: Session = Depends(get_db)):
+    """
+    Creates PENDING backtest records for any ENTER alerts that don't have one.
+    Use this after a destructive recovery wiped data that can't be re-simulated
+    (e.g., same-day candle data not available after market close).
+    """
+    query_date = date or datetime.now(IST).strftime("%Y-%m-%d")
+    
+    alerts = db.query(Alert).filter(
+        Alert.trigger_date == query_date,
+        Alert.verdict == "ENTER"
+    ).all()
+    
+    created = 0
+    for alert in alerts:
+        existing = db.query(BacktestResult).filter(BacktestResult.alert_id == alert.id).first()
+        if not existing:
+            from backtest import create_pending_trade
+            create_pending_trade(alert, db)
+            created += 1
+    
+    return {"status": "success", "date": query_date, "alerts_found": len(alerts), "records_created": created}
+
 
 
 @app.post("/api/admin/reprocess-errors")
