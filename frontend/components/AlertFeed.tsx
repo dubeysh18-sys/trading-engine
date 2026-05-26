@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { ExternalLink, RefreshCw, Zap, Settings2 } from "lucide-react";
-import { fetchAlerts, fetchLivePrices, type Alert, type LivePrice } from "@/lib/api";
+import { fetchAlerts, fetchLivePrices, API, type Alert, type LivePrice } from "@/lib/api";
 import VerdictPill from "./VerdictPill";
 
 /* ── helpers ──────────────────────────────────────────────────────── */
@@ -122,27 +122,66 @@ export default function AlertFeed() {
 
   const refresh = useCallback(async () => {
     try {
-      const [alertData, priceData] = await Promise.all([
-        fetchAlerts(),
-        fetchLivePrices(),
-      ]);
+      const alertData = await fetchAlerts();
       setAlerts(alertData);
+      setError(null);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load alerts");
+    }
+
+    try {
+      const priceData = await fetchLivePrices();
       const map: Record<number, LivePrice> = {};
       priceData.forEach((p) => { map[p.alert_id] = p; });
       setLivePrices(map);
-      setLastFetch(new Date());
-      setError(null);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to load");
-    } finally {
-      setLoading(false);
+    } catch (e) {
+      console.warn("Failed to fetch live prices", e);
     }
+
+    setLastFetch(new Date());
+    setLoading(false);
   }, []);
 
+  // Use recursive setTimeout to prevent concurrent overlapping fetches
   useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 10_000);
-    return () => clearInterval(id);
+    let timeoutId: ReturnType<typeof setTimeout>;
+    let isMounted = true;
+
+    const poll = async () => {
+      if (!isMounted) return;
+      await refresh();
+      if (isMounted) {
+        timeoutId = setTimeout(poll, 10000);
+      }
+    };
+    poll();
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timeoutId);
+    };
+  }, [refresh]);
+
+  // Real-time SSE for instant webhook alerts
+  useEffect(() => {
+    const sse = new EventSource(`${API}/api/alerts/stream`);
+    
+    sse.addEventListener("new_alert", (e) => {
+      try {
+        const newAlert = JSON.parse(e.data);
+        setAlerts((prev) => {
+          // Prevent duplicates if API fetch already got it
+          if (prev.some(a => a.id === newAlert.id)) return prev;
+          return [newAlert, ...prev];
+        });
+        // Immediately fetch prices to get the live state of the new alert
+        refresh();
+      } catch (err) {
+        console.error("SSE parse error", err);
+      }
+    });
+
+    return () => sse.close();
   }, [refresh]);
 
   const enterCount = alerts.filter((a) => a.verdict === "ENTER").length;
