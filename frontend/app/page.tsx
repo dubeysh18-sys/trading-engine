@@ -36,7 +36,7 @@ export default function DashboardPage() {
       >
         {/* Left Column: Live Alert Feed */}
         <section style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-          <AlertFeed selectedDate={selectedDate} />
+          <AlertFeed />
         </section>
 
         {/* Right Column: EOD Backtester Hub */}
