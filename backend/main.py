@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from database import init_db, get_db, Alert, BacktestResult
+from database import init_db, get_db, Alert, BacktestResult, engine
 from upstox_client import get_historical_data, get_ltp, resolve_instrument_key
 from logic_engine import evaluate_rules, get_indicator_snapshot
 from backtest import run_backtest, track_live_trades
@@ -113,11 +113,31 @@ def _self_keepalive():
         logger.debug(f"Self-keepalive ping failed (non-critical): {e}")
 
 
+from sqlalchemy import text, inspect as sa_inspect
+
+def run_startup_migrations(engine):
+    """Safely adds any missing columns without breaking existing data."""
+    inspector = sa_inspect(engine)
+    try:
+        existing_columns = [col["name"] for col in inspector.get_columns("alerts")]
+        
+        with engine.connect() as conn:
+            if "pivot_r3" not in existing_columns:
+                conn.execute(text("ALTER TABLE alerts ADD COLUMN pivot_r3 REAL"))
+                conn.commit()
+                logger.info("[Migration] Added pivot_r3 column to alerts table.")
+            else:
+                logger.info("[Migration] pivot_r3 already exists. Skipping.")
+    except Exception as e:
+        logger.error(f"[Migration] Startup migration check failed: {e}")
+
+
 # ── App Lifecycle ──────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _main_event_loop
     logger.info("Starting Trading Rule Engine...")
+    run_startup_migrations(engine)        # ← runs migration on every boot
     _main_event_loop = asyncio.get_event_loop()  # capture loop for background threads
     init_db()
     # Schedule EOD backtest at 15:30 IST, Mon-Fri
