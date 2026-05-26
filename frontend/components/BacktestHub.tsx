@@ -67,7 +67,7 @@ function OutcomeIcon({ outcome }: { outcome: string | null }) {
 export default function BacktestHub({ selectedDate }: { selectedDate: string }) {
   const [summary, setSummary]       = useState<BacktestSummary | null>(null);
   const [trades, setTrades]         = useState<BacktestTrade[]>([]);
-  const [livePrices, setLivePrices] = useState<Record<number, LivePrice>>({});
+  const [livePrices, setLivePrices] = useState<Record<string, LivePrice>>({});
   const [loading, setLoading]       = useState(true);
   const [running, setRunning]       = useState(false);
   const [runMsg, setRunMsg]         = useState<string | null>(null);
@@ -88,8 +88,8 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
       setSummary(data.summary);
       setTrades(data.trades);
       
-      const map: Record<number, LivePrice> = {};
-      priceData.forEach((p: LivePrice) => { map[p.alert_id] = p; });
+      const map: Record<string, LivePrice> = {};
+      priceData.forEach((p: LivePrice) => { map[p.stock] = p; });
       setLivePrices(map);
       
       setLastFetch(new Date());
@@ -145,10 +145,10 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
   // Compute live adjusted summary
   const adjustedSummary = summary ? { ...summary } : null;
   const augmentedTrades = trades.map(t => {
-    if (t.outcome === "PENDING" && livePrices[t.alert_id]) {
-      const ltp = livePrices[t.alert_id].ltp;
-      const pct = (ltp - t.entry_price) / t.entry_price * 100;
-      const amt = (t.quantity || 0) * (ltp - t.entry_price);
+    if (t.outcome === "PENDING" && livePrices[t.stock]) {
+      const ltp = livePrices[t.stock].ltp;
+      const pct = t.entry_price ? (ltp - t.entry_price) / t.entry_price * 100 : 0;
+      const amt = (t.quantity || 0) * (ltp - (t.entry_price || 0));
       return { ...t, live_pnl_pct: pct, live_pnl_amt: amt, ltp };
     }
     return t;

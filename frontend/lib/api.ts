@@ -37,7 +37,7 @@ export interface BacktestTrade {
   entry_price: number | null;
   exit_time:   string | null;
   exit_price:  number | null;
-  outcome:     "PROFIT" | "LOSS" | "FLAT" | null;
+  outcome:     "PROFIT" | "LOSS" | "FLAT" | "PENDING" | null;
   pnl_pct:     number | null;
   quantity:    number | null;
   pnl_amount:  number | null;
