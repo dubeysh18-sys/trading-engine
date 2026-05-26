@@ -334,8 +334,9 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
         stop_loss = round(entry_price * 0.995, 2)
 
     # Fetch 5-min data for the alert date
+    # Use days=2 to ensure we have the full alert day even after weekend gaps
     try:
-        df = get_historical_data(alert.stock, days=1, end_date_str=alert.trigger_date)
+        df = get_historical_data(alert.stock, days=2, end_date_str=alert.trigger_date)
     except Exception as e:
         logger.error(f"Could not fetch data for {alert.stock}: {e}")
         return None
@@ -343,8 +344,20 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
     if df.empty:
         return None
 
-    # Filter to candles from trigger_time onwards (including trigger candle as entry candle)
-    # Simulation ends at 15:20 — the last candle before Kite auto-squares at 15:25
+    # ── CRITICAL: Filter to ONLY the alert date ───────────────────────────────
+    # Without this, candles from the previous trading day's 15:00-15:20 window
+    # (e.g. Friday) would be mixed with the alert day's candles (e.g. Monday),
+    # causing phantom SL/Target hits from the wrong day's price action.
+    from datetime import datetime as _dt
+    alert_date_obj = _dt.strptime(alert.trigger_date, "%Y-%m-%d").date()
+    df["date_only"] = df["timestamp"].dt.date
+    df = df[df["date_only"] == alert_date_obj].reset_index(drop=True)
+
+    if df.empty:
+        logger.warning(f"No candles found for {alert.stock} on {alert.trigger_date}")
+        return None
+
+    # Filter to candles from trigger_time up to 15:20 (last bar before 3:25 auto-square-off)
     square_off_time = time(15, 20)
     df["time_only"] = df["timestamp"].dt.time
     post_trigger = df[
@@ -353,7 +366,7 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
     ].reset_index(drop=True)
 
     if post_trigger.empty:
-        logger.warning(f"No post-trigger candles found for {alert.stock}")
+        logger.warning(f"No post-trigger candles found for {alert.stock} on {alert.trigger_date}")
         return None
 
     # ── Entry: first candle at or after trigger time ──────────────────────────
