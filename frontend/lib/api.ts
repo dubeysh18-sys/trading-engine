@@ -99,8 +99,9 @@ export async function fetchBacktestResults(date?: string): Promise<BacktestResul
   return res.json();
 }
 
-export async function triggerBacktest(): Promise<{ status: string; message: string }> {
-  const res = await fetch(`${BASE_URL}/api/run-backtest`, {
+export async function triggerBacktest(date?: string): Promise<{ status: string; message: string }> {
+  const url = date ? `${BASE_URL}/api/run-backtest?target_date=${date}` : `${BASE_URL}/api/run-backtest`;
+  const res = await fetch(url, {
     method: "POST",
     cache: "no-store",
   });

@@ -7,7 +7,7 @@ on 5-minute candles from trigger_time to 15:20, and records results.
 
 import logging
 import pytz
-from datetime import datetime, time
+from datetime import datetime, time, date
 from sqlalchemy.orm import Session
 
 from database import Alert, BacktestResult, SessionLocal
@@ -249,6 +249,21 @@ def run_backtest(date_str: str | None = None) -> dict:
 
     logger.info(f"Starting backtest for date: {date_str}")
     db: Session = SessionLocal()
+    
+    # Resolve any stale pending trades from past dates
+    try:
+        stale = db.query(BacktestResult).join(Alert).filter(
+            BacktestResult.outcome == "PENDING",
+            Alert.trigger_date < str(date.today())
+        ).all()
+        for trade in stale:
+            if trade.alert:
+                logger.info(f"Resolving stale pending trade for {trade.alert.stock} on {trade.alert.trigger_date}")
+                _backtest_single_alert(trade.alert, db)
+        db.commit()
+    except Exception as e:
+        logger.error(f"Error during stale trades resolution: {e}")
+
     results = {"date": date_str, "processed": 0, "wins": 0, "losses": 0, "flats": 0,
                "win_rate": 0.0, "net_pnl_pct": 0.0, "net_pnl_amount": 0.0, "errors": []}
 

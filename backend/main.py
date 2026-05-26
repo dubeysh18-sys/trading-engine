@@ -628,11 +628,14 @@ def nifty_status(db: Session = Depends(get_db)):
 
 # ── Backtest ───────────────────────────────────────────────────────────────────
 @app.post("/api/run-backtest")
-async def trigger_backtest(background_tasks: BackgroundTasks):
+async def trigger_backtest(
+    background_tasks: BackgroundTasks,
+    target_date: str = Query(None)
+):
     """Manual trigger for EOD backtest. Runs in background."""
-    today = datetime.now(IST).strftime("%Y-%m-%d")
-    background_tasks.add_task(run_backtest, today)
-    return {"status": "started", "date": today, "message": "Backtest running in background. Refresh results in ~30 seconds."}
+    date_str = target_date or datetime.now(IST).strftime("%Y-%m-%d")
+    background_tasks.add_task(run_backtest, date_str)
+    return {"status": "started", "date": date_str, "message": f"Backtest running in background for {date_str}. Refresh results in ~30 seconds."}
 
 
 def format_time_str(time_str: str | None) -> str:

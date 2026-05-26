@@ -135,7 +135,7 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
     setRunning(true);
     setRunMsg(null);
     try {
-      const res = await triggerBacktest();
+      const res = await triggerBacktest(selectedDate);
       setRunMsg(res.message);
       setTimeout(refresh, 5000); // refresh after 5s
     } catch (e: unknown) {
