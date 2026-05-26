@@ -282,25 +282,35 @@ def _process_alerts(
                         "nifty_ltp": None, "nifty_vwap": None,
                     }
 
+                # Helper: convert numpy scalars → plain Python float so
+                # psycopg2 doesn't misinterpret np.float64 as a schema name
+                def _f(v):
+                    if v is None:
+                        return None
+                    try:
+                        return float(v)
+                    except (TypeError, ValueError):
+                        return None
+
                 alert = Alert(
                     scan_name     = scan_name,
                     alert_name    = alert_name,
                     stock         = stock,
                     trigger_time  = trigger_time,
                     trigger_date  = trigger_date,
-                    trigger_price = trigger_price,
-                    entry_price   = result["entry"],
-                    target        = result["target"],
-                    stop_loss     = result["stop_loss"],
-                    vwap          = result["vwap"],
-                    ema9          = result["ema9"],
-                    pivot_r1      = result["pivot_r1"],
-                    pivot_r2      = result["pivot_r2"],
-                    pivot_s1      = result["pivot_s1"],
-                    upper_wick    = result["upper_wick"],
-                    solid_body    = result["solid_body"],
-                    nifty_ltp     = result["nifty_ltp"],
-                    nifty_vwap    = result["nifty_vwap"],
+                    trigger_price = _f(trigger_price),
+                    entry_price   = _f(result["entry"]),
+                    target        = _f(result["target"]),
+                    stop_loss     = _f(result["stop_loss"]),
+                    vwap          = _f(result["vwap"]),
+                    ema9          = _f(result["ema9"]),
+                    pivot_r1      = _f(result["pivot_r1"]),
+                    pivot_r2      = _f(result["pivot_r2"]),
+                    pivot_s1      = _f(result["pivot_s1"]),
+                    upper_wick    = _f(result["upper_wick"]),
+                    solid_body    = _f(result["solid_body"]),
+                    nifty_ltp     = _f(result["nifty_ltp"]),
+                    nifty_vwap    = _f(result["nifty_vwap"]),
                     verdict       = result["verdict"],
                     verdict_reason= result["verdict_reason"],
                 )
