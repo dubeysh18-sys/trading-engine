@@ -11,8 +11,8 @@ import {
 } from "lucide-react";
 import {
   fetchBacktestResults,
-  fetchLivePrices,
   triggerBacktest,
+  API,
   type BacktestTrade,
   type BacktestSummary,
   type LivePrice,
@@ -105,17 +105,9 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
 
   const refresh = useCallback(async () => {
     try {
-      const [data, priceData] = await Promise.all([
-        fetchBacktestResults(selectedDate),
-        fetchLivePrices(selectedDate).catch(() => []),
-      ]);
+      const data = await fetchBacktestResults(selectedDate);
       setSummary(data.summary);
       setTrades(data.trades);
-      
-      const map: Record<string, LivePrice> = {};
-      priceData.forEach((p: LivePrice) => { map[p.stock] = p; });
-      setLivePrices(map);
-      
       setLastFetch(new Date());
       setError(null);
     } catch (e: unknown) {
@@ -127,9 +119,41 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 10_000); // poll every 10s for real-time live floating P&L
+    const id = setInterval(refresh, 10_000); // poll every 10s to sync finalized db trade records
     return () => clearInterval(id);
   }, [refresh]);
+
+  // Real-time SSE listener for floating live price updates
+  useEffect(() => {
+    const es = new EventSource(`${API}/api/alerts/stream`);
+
+    es.addEventListener("price_update", (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.stock) {
+          setLivePrices((prev) => ({
+            ...prev,
+            [data.stock]: {
+              stock: data.stock,
+              alert_id: data.alert_id,
+              entry_price: null,
+              target: null,
+              stop_loss: null,
+              ltp: data.ltp,
+              pnl_pct: data.floating_pnl_pct,
+              pnl_amount: null,
+              quantity: null,
+              status: data.status,
+            }
+          }));
+        }
+      } catch (err) {
+        console.error("SSE price_update parse error", err);
+      }
+    });
+
+    return () => es.close();
+  }, []);
 
   const handleRunBacktest = async () => {
     setRunning(true);

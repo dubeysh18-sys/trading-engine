@@ -138,6 +138,7 @@ def track_live_trades():
                 if _main_event_loop and not _main_event_loop.is_closed():
                     event_payload = {
                         "alert_id": alert.id,
+                        "stock": alert.stock,
                         "ltp": round(final_ltp, 2),
                         "floating_pnl_pct": pnl_pct,
                         "status": status
