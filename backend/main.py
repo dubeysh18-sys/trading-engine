@@ -13,9 +13,12 @@ Routes:
 import logging
 import os
 import pytz
+import smtplib
 from datetime import datetime
 from contextlib import asynccontextmanager
 from collections import deque
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 import json
 import asyncio
@@ -158,6 +161,81 @@ class ChartinkWebhook(BaseModel):
     scan_url:        str | None = None
     alert_name:      str | None = None
     webhook_url:     str | None = None
+
+
+# ── Email Notifications ───────────────────────────────────────────────────────
+def send_enter_email(stock: str, entry: float, target: float, stop_loss: float,
+                     scan_name: str, trigger_time: str):
+    """
+    Sends an HTML email for every ENTER verdict.
+    Requires SMTP_USER and SMTP_PASSWORD in .env (Gmail App Password).
+    Fails silently so it never breaks the main alert flow.
+    """
+    smtp_user  = os.getenv("SMTP_USER", "")
+    smtp_pass  = os.getenv("SMTP_PASSWORD", "")
+    to_email   = os.getenv("NOTIFICATION_EMAIL", "dubeysh18@gmail.com")
+
+    if not smtp_user or not smtp_pass:
+        logger.warning("Email: SMTP_USER / SMTP_PASSWORD not set — skipping email")
+        return
+
+    try:
+        sl_pct     = round((entry - stop_loss) / entry * 100, 2)
+        target_pct = round((target - entry) / entry * 100, 2)
+        rr         = round(target_pct / sl_pct, 1) if sl_pct else "N/A"
+
+        html = f"""
+<html><body style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,sans-serif">
+<div style="max-width:560px;margin:24px auto;background:#0f1117;border-radius:14px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.4)">
+  <div style="background:linear-gradient(135deg,#16a34a,#22c55e);padding:24px 28px;text-align:center">
+    <div style="font-size:36px;margin-bottom:6px">🟢</div>
+    <h1 style="margin:0;font-size:22px;color:#fff;letter-spacing:.5px">ENTER Signal Detected</h1>
+    <p style="margin:6px 0 0;color:rgba(255,255,255,.75);font-size:13px">{scan_name} &bull; {trigger_time}</p>
+  </div>
+  <div style="padding:24px 28px">
+    <div style="font-size:36px;font-weight:700;color:#22c55e;font-family:monospace;letter-spacing:1px">{stock}</div>
+    <div style="display:flex;gap:12px;margin:20px 0">
+      <div style="flex:1;background:#1e2d45;border-radius:10px;padding:16px;text-align:center">
+        <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Entry</div>
+        <div style="font-size:22px;font-weight:700;color:#22c55e;font-family:monospace">&zwj;&#8377;{entry:.2f}</div>
+      </div>
+      <div style="flex:1;background:#1e2d45;border-radius:10px;padding:16px;text-align:center">
+        <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Target</div>
+        <div style="font-size:22px;font-weight:700;color:#60a5fa;font-family:monospace">&zwj;&#8377;{target:.2f}</div>
+        <div style="font-size:11px;color:#4b5563;margin-top:2px">+{target_pct}%</div>
+      </div>
+      <div style="flex:1;background:#1e2d45;border-radius:10px;padding:16px;text-align:center">
+        <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Stop Loss</div>
+        <div style="font-size:22px;font-weight:700;color:#f87171;font-family:monospace">&zwj;&#8377;{stop_loss:.2f}</div>
+        <div style="font-size:11px;color:#4b5563;margin-top:2px">-{sl_pct}%</div>
+      </div>
+    </div>
+    <div style="background:#1e2d45;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#94a3b8">
+      Risk/Reward: <strong style="color:#e2e8f0">{rr}:1</strong>
+    </div>
+    <a href="https://kite.zerodha.com/chart/web/ciq/NSE/{stock}/EQ"
+       style="display:block;background:#3b82f6;color:#fff;text-align:center;padding:13px;border-radius:8px;text-decoration:none;font-weight:700;font-size:14px"
+    >View Chart on Kite &rarr;</a>
+  </div>
+  <div style="padding:12px 28px;background:#0a0e17;text-align:center;font-size:10px;color:#4b5563">
+    Automated alert from Trading Rule Engine &bull; Not financial advice
+  </div>
+</div>
+</body></html>
+"""
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"\U0001f7e2 ENTER: {stock} @ \u20b9{entry:.0f} | T:{target:.0f} SL:{stop_loss:.0f}"
+        msg["From"]    = smtp_user
+        msg["To"]      = to_email
+        msg.attach(MIMEText(html, "html"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_user, to_email, msg.as_string())
+
+        logger.info(f"Email sent for {stock} ENTER to {to_email}")
+    except Exception as e:
+        logger.error(f"Email send failed for {stock}: {e}")
 
 
 # ── Keep-alive ─────────────────────────────────────────────────────────────────
@@ -324,6 +402,15 @@ def _process_alerts(
 
                 db.commit()
                 logger.info(f"  ✓ Saved {stock}: {result['verdict']} | {result['verdict_reason']}")
+
+                # Send email notification for ENTER signals (non-blocking)
+                if alert.verdict == "ENTER" and alert.entry_price and alert.target and alert.stop_loss:
+                    import threading
+                    threading.Thread(
+                        target=send_enter_email,
+                        args=(stock, alert.entry_price, alert.target, alert.stop_loss, scan_name, trigger_time),
+                        daemon=True
+                    ).start()
 
                 # ── Push to SSE clients (thread-safe) ──────────────────────
                 serialized = _serialize_alert(alert)
