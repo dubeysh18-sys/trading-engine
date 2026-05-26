@@ -226,6 +226,12 @@ def evaluate_rules(
             stop_loss = round(min(possible_sls), 2)
         else:
             stop_loss = round(current_price * 0.99, 2) # fallback 1%
+            
+        # CRITICAL BUG FIX: Ensure stop loss is strictly BELOW the entry price.
+        # If Chartink webhook is delayed and the stock has already run up, 
+        # the 5-min candle low might be > the entry price, causing SL > Entry.
+        if stop_loss >= entry:
+            stop_loss = round(entry * 0.995, 2) # Cap SL at 0.5% below entry
 
     return {
         "verdict":        verdict,
@@ -243,3 +249,60 @@ def evaluate_rules(
         "nifty_ltp":      nifty_ltp,
         "nifty_vwap":     nifty_vwap,
     }
+
+
+def evaluate_wait_upgrade(last_closed_candle: pd.Series, live_price: float) -> dict:
+    """
+    Evaluates if a WAIT stock has completed a healthy pullback 
+    and triggered a confirmed entry, OR if the setup has failed.
+    Returns {"status": "ENTER"|"SKIP"|"WAIT", "reason": str, ...}
+    """
+    opn  = float(last_closed_candle['open'])
+    high = float(last_closed_candle['high'])
+    low  = float(last_closed_candle['low'])
+    cls  = float(last_closed_candle['close'])
+    vwap = float(last_closed_candle['vwap'])
+    
+    # --- NEW STEP: The Failure Condition (Thesis Broken) ---
+    # If the candle closes decisively below the VWAP support zone, the trend is dead.
+    failure_level = vwap * 0.997 # 0.3% below VWAP
+    
+    if cls < failure_level:
+        # We use SKIP here so it integrates visually with the UI as a rejected trade
+        return {"status": "SKIP", "reason": "CANCELLED: Stock crashed below VWAP support. Setup invalidated."}
+
+    # --- STEP 1: The Approach (Entering the Value Zone) ---
+    upper_zone_limit = vwap * 1.003
+    lower_zone_limit = vwap * 0.998
+    
+    touched_zone = low <= upper_zone_limit
+    held_support = cls >= lower_zone_limit
+    
+    if not (touched_zone and held_support):
+        return {"status": "WAIT", "reason": "Has not tested VWAP support zone yet."}
+    
+    # --- STEP 2: The Stabilization (Base Candle Validation) ---
+    is_green = cls > opn
+    body_size = abs(cls - opn)
+    lower_wick = min(opn, cls) - low
+    
+    buyer_support_visible = is_green or (lower_wick > body_size)
+    
+    if not buyer_support_visible:
+        return {"status": "WAIT", "reason": "Tested support, but no buyer conviction (Base Candle failed)."}
+    
+    # --- STEP 3: The Trigger (Resumption) ---
+    base_candle_high = high
+    
+    if live_price > base_candle_high:
+        return {
+            "status": "ENTER", 
+            "entry_price": live_price,
+            "stop_loss": min(vwap, low), 
+            "reason": f"Pullback confirmed. Broke base candle high of {base_candle_high:.2f}"
+        }
+    else:
+        return {
+            "status": "WAIT", 
+            "reason": f"Base candle formed. Waiting for live price to break above {base_candle_high:.2f}."
+        }
