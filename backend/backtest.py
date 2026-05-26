@@ -6,11 +6,12 @@ on 5-minute candles from trigger_time to 15:15, and records results.
 """
 
 import logging
+import pytz
 from datetime import datetime, time
 from sqlalchemy.orm import Session
 
 from database import Alert, BacktestResult, SessionLocal
-from upstox_client import get_historical_data, get_ltp
+from upstox_client import get_historical_data, get_ltp, get_ltps
 
 logger = logging.getLogger(__name__)
 
@@ -52,43 +53,55 @@ def create_pending_trade(alert: Alert, db: Session):
 def track_live_trades():
     """Fetches LTP for all PENDING trades and checks SL/Target."""
     logger.info("Running 1-minute live trade tracker...")
+    IST = pytz.timezone("Asia/Kolkata")
     db = SessionLocal()
     try:
-        today = datetime.now().strftime("%Y-%m-%d")
-        now_time = datetime.now().time()
+        now_ist = datetime.now(IST)
+        today = now_ist.strftime("%Y-%m-%d")
+        now_time = now_ist.time()
         
         # Are we at or past square off time?
-        force_square_off = now_time >= time(15, 15)
+        force_square_off = now_time >= time(15, 25)
         
         pending_trades = db.query(BacktestResult).join(Alert).filter(
             Alert.trigger_date == today,
             BacktestResult.outcome == "PENDING"
         ).all()
         
+        if not pending_trades:
+            return
+
+        pending_stocks = [t.alert.stock for t in pending_trades]
+        ltp_map = get_ltps(pending_stocks)
+        
         for trade in pending_trades:
             try:
                 alert = trade.alert
-                ltp = get_ltp(alert.stock)
+                ltp = ltp_map.get(alert.stock.upper())
                 if not ltp: continue
                 
                 outcome = None
                 exit_price = None
+                exit_time = None
                 
                 # Check rules
                 if alert.target and ltp >= alert.target:
                     outcome = "PROFIT"
                     exit_price = alert.target
+                    exit_time = now_ist.strftime("%I:%M %p").lower().lstrip("0")
                 elif alert.stop_loss and ltp <= alert.stop_loss:
                     outcome = "LOSS"
                     exit_price = alert.stop_loss
+                    exit_time = now_ist.strftime("%I:%M %p").lower().lstrip("0")
                 elif force_square_off:
                     outcome = "FLAT" if ltp == alert.entry_price else ("PROFIT" if ltp > alert.entry_price else "LOSS")
                     exit_price = ltp
+                    exit_time = "3:25 pm" # Force 3:25 PM for auto-square off
                     
                 if outcome and exit_price is not None:
                     trade.outcome = outcome
                     trade.exit_price = exit_price
-                    trade.exit_time = datetime.now().strftime("%I:%M %p")
+                    trade.exit_time = exit_time
                     trade.pnl_pct = round((exit_price - alert.entry_price) / alert.entry_price * 100, 2)
                     trade.pnl_amount = round(trade.quantity * (exit_price - alert.entry_price), 2)
                     logger.info(f"Live Track: Locked in {outcome} for {alert.stock} at ₹{exit_price}")
@@ -122,10 +135,13 @@ def monitor_wait_pullbacks():
         if not wait_alerts:
             return
             
+        wait_stocks = [a.stock for a in wait_alerts]
+        ltp_map = get_ltps(wait_stocks)
+        
         for alert in wait_alerts:
             try:
                 # 1. Fetch live price
-                ltp = get_ltp(alert.stock)
+                ltp = ltp_map.get(alert.stock.upper())
                 if not ltp: continue
                 
                 # 2. Fetch today's 5-minute data
@@ -278,7 +294,7 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
 
     # Fetch 5-min data for the alert date
     try:
-        df = get_historical_data(alert.stock, days=1)
+        df = get_historical_data(alert.stock, days=1, end_date_str=alert.trigger_date)
     except Exception as e:
         logger.error(f"Could not fetch data for {alert.stock}: {e}")
         return None
@@ -286,8 +302,8 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
     if df.empty:
         return None
 
-    # Filter to candles AFTER trigger_time and up to 15:15
-    square_off_time = time(15, 15)
+    # Filter to candles AFTER trigger_time and up to 15:20 (closes at 15:25)
+    square_off_time = time(15, 20)
     df["time_only"] = df["timestamp"].dt.time
     post_trigger = df[
         (df["time_only"] >= trigger_time) &
@@ -299,9 +315,9 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
         return None
 
     # ── Simulate the trade ────────────────────────────────────────────────────
-    outcome    = "FLAT"
-    exit_price = post_trigger.iloc[-1]["close"]  # Default: square-off at close
-    exit_time  = str(post_trigger.iloc[-1]["time_only"])
+    outcome    = None
+    exit_price = None
+    exit_time  = None
     entry_time = str(post_trigger.iloc[0]["time_only"])
 
     for _, candle in post_trigger.iterrows():
@@ -324,6 +340,17 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
             exit_price = stop_loss
             exit_time  = str(candle["time_only"])
             break
+
+    if outcome is None:
+        # None of target/SL hit -> auto-squared off at 3:25 PM
+        exit_price = post_trigger.iloc[-1]["close"]
+        exit_time  = "15:25:00"
+        if exit_price > entry_price:
+            outcome = "PROFIT"
+        elif exit_price < entry_price:
+            outcome = "LOSS"
+        else:
+            outcome = "FLAT"
 
     pnl_pct = round((exit_price - entry_price) / entry_price * 100, 2)
     quantity = int((50000 * 4) / entry_price)

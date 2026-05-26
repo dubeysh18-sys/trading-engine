@@ -124,7 +124,7 @@ def resolve_instrument_key(symbol: str) -> str:
 
 
 # ── Historical Data ────────────────────────────────────────────────────────────
-def get_historical_data(symbol: str, days: int = 3) -> pd.DataFrame:
+def get_historical_data(symbol: str, days: int = 3, end_date_str: str | None = None) -> pd.DataFrame:
     """
     Fetch the last `days` of 5-minute OHLCV candles from Upstox V3.
 
@@ -137,8 +137,13 @@ def get_historical_data(symbol: str, days: int = 3) -> pd.DataFrame:
     else:
         instrument_key = resolve_instrument_key(symbol)
 
-    to_date   = datetime.now().strftime("%Y-%m-%d")
-    from_date = (datetime.now() - timedelta(days=days + 2)).strftime("%Y-%m-%d")
+    if end_date_str:
+        to_date_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
+    else:
+        to_date_dt = datetime.now()
+
+    to_date   = to_date_dt.strftime("%Y-%m-%d")
+    from_date = (to_date_dt - timedelta(days=days + 2)).strftime("%Y-%m-%d")
     # +2 to account for weekends
 
     url = (
@@ -173,13 +178,13 @@ def get_historical_data(symbol: str, days: int = 3) -> pd.DataFrame:
         columns=["timestamp", "open", "high", "low", "close", "volume", "oi"]
     )
     # Parse timestamps — Upstox returns ISO8601 with timezone offset (+05:30)
-    # Strip tz-info so all downstream comparisons use naive datetimes consistently
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_localize(None)
+    # Convert to IST (Asia/Kolkata) and then strip tz-info to use naive datetimes in IST
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
     df = df[["timestamp", "open", "high", "low", "close", "volume"]]
     df = df.sort_values("timestamp").reset_index(drop=True)
 
     # Keep only last `days` trading days (naive cutoff, matches stripped timestamps)
-    cutoff = (datetime.now() - timedelta(days=days + 1)).replace(
+    cutoff = (to_date_dt - timedelta(days=days + 1)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
     df = df[df["timestamp"] >= pd.Timestamp(cutoff)]
@@ -214,6 +219,54 @@ def get_ltp(symbol: str) -> float | None:
     except Exception as e:
         logger.error(f"get_ltp({symbol}) failed: {e}")
     return None
+
+
+def get_ltps(symbols: list[str]) -> dict[str, float]:
+    """
+    Fetch LTP for a list of symbols in a single Upstox API request.
+    Returns a dict mapping stock_symbol -> ltp (float).
+    """
+    if not symbols:
+        return {}
+    
+    # Resolve all instrument keys and map key -> stock_symbol
+    key_to_symbol = {}
+    keys = []
+    for s in symbols:
+        try:
+            if s.upper() in ("NIFTY50", "NIFTY", "NIFTY 50"):
+                key = NIFTY_KEY
+            else:
+                key = resolve_instrument_key(s)
+            keys.append(key)
+            key_to_symbol[key] = s.upper()
+        except Exception as e:
+            logger.error(f"Error resolving key for {s}: {e}")
+            
+    if not keys:
+        return {}
+        
+    try:
+        # Join keys with commas (up to 100 symbols is supported by Upstox in one call)
+        url = f"{UPSTOX_BASE_V2}/market-quote/ltp"
+        params = {"symbol": ",".join(keys)}
+        resp = requests.get(url, headers=_headers(), params=params, timeout=10)
+        resp.raise_for_status()
+        
+        data = resp.json()
+        quotes = data.get("data", {})
+        
+        result = {}
+        for key, val in quotes.items():
+            ltp = val.get("last_price")
+            if ltp is not None:
+                stock_sym = key_to_symbol.get(key)
+                if stock_sym:
+                    result[stock_sym] = float(ltp)
+        return result
+    except Exception as e:
+        logger.error(f"get_ltps({symbols}) failed: {e}")
+        return {}
 
 
 # ── Nifty Status ──────────────────────────────────────────────────────────────

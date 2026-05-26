@@ -64,6 +64,18 @@ function OutcomeIcon({ outcome }: { outcome: string | null }) {
   return <Minus size={13} color="var(--text-secondary)" />;
 }
 
+const timeToMinutes = (timeStr: string | null | undefined): number => {
+  if (!timeStr || timeStr === "—") return -1;
+  const match = timeStr.toLowerCase().match(/(\d+):(\d+)\s*(am|pm)?/);
+  if (!match) return -1;
+  let [_, hoursStr, minutesStr, ampm] = match;
+  let hours = parseInt(hoursStr, 10);
+  const minutes = parseInt(minutesStr, 10);
+  if (ampm === "pm" && hours < 12) hours += 12;
+  if (ampm === "am" && hours === 12) hours = 0;
+  return hours * 60 + minutes;
+};
+
 export default function BacktestHub({ selectedDate }: { selectedDate: string }) {
   const [summary, setSummary]       = useState<BacktestSummary | null>(null);
   const [trades, setTrades]         = useState<BacktestTrade[]>([]);
@@ -74,6 +86,18 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
   const [error, setError]           = useState<string | null>(null);
   const [lastFetch, setLastFetch]   = useState<Date | null>(null);
   const [marketOpen, setMarketOpen] = useState(false);
+
+  const [sortField, setSortField] = useState<"entry_time" | "exit_time" | "pnl_amount" | null>(null);
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+
+  const toggleSort = (field: "entry_time" | "exit_time" | "pnl_amount") => {
+    if (sortField === field) {
+      setSortDirection(prev => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDirection("desc"); // Default to desc
+    }
+  };
 
   useEffect(() => {
     setMarketOpen(isMarketOpen());
@@ -174,6 +198,32 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
       adjustedSummary.net_pnl_amount = totalAmt;
     }
   }
+
+  // Sort augmented trades
+  const sortedTrades = [...augmentedTrades].sort((a, b) => {
+    if (!sortField) return 0;
+
+    let valA = 0;
+    let valB = 0;
+
+    if (sortField === "pnl_amount") {
+      valA = a.pnl_amount ?? a.live_pnl_amt ?? 0;
+      valB = b.pnl_amount ?? b.live_pnl_amt ?? 0;
+    } else if (sortField === "entry_time") {
+      valA = timeToMinutes(a.entry_time);
+      valB = timeToMinutes(b.entry_time);
+    } else if (sortField === "exit_time") {
+      valA = timeToMinutes(a.exit_time);
+      valB = timeToMinutes(b.exit_time);
+    }
+
+    if (valA === valB) return 0;
+    if (sortDirection === "asc") {
+      return valA > valB ? 1 : -1;
+    } else {
+      return valA < valB ? 1 : -1;
+    }
+  });
 
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -390,20 +440,23 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
             <thead>
               <tr>
                 <th>Stock</th>
-                <th>Entry Time</th>
+                <th onClick={() => toggleSort("entry_time")} style={{ cursor: "pointer", userSelect: "none" }}>
+                  Entry Time {sortField === "entry_time" && (sortDirection === "asc" ? " ▲" : " ▼")}
+                </th>
                 <th style={{ textAlign: "right" }}>Entry ₹</th>
-                <th>Exit Time</th>
+                <th onClick={() => toggleSort("exit_time")} style={{ cursor: "pointer", userSelect: "none" }}>
+                  Exit Time {sortField === "exit_time" && (sortDirection === "asc" ? " ▲" : " ▼")}
+                </th>
                 <th style={{ textAlign: "right" }}>Exit ₹</th>
-                <th>Outcome</th>
-                <th style={{ textAlign: "right" }}>P&L %</th>
-                <th style={{ textAlign: "right" }}>P&L ₹</th>
-                <th style={{ textAlign: "right" }}>Qty</th>
+                <th onClick={() => toggleSort("pnl_amount")} style={{ cursor: "pointer", userSelect: "none", textAlign: "right" }}>
+                  P&L {sortField === "pnl_amount" && (sortDirection === "asc" ? " ▲" : " ▼")}
+                </th>
                 <th style={{ textAlign: "right" }}>Target ₹</th>
                 <th style={{ textAlign: "right" }}>SL ₹</th>
               </tr>
             </thead>
             <tbody>
-              {augmentedTrades.map((trade: any, idx) => (
+              {sortedTrades.map((trade: any, idx) => (
                 <tr key={idx} className="animate-fade-in">
                   <td>
                     <span
@@ -448,49 +501,22 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
                       : fmt(trade.exit_price)}
                   </td>
 
-                  <td>
-                    <span
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: 4,
-                        fontSize: 11,
-                        fontWeight: 600,
-                      }}
-                      className={outcomeClass(trade.outcome)}
-                    >
-                      <OutcomeIcon outcome={trade.outcome} />
-                      {trade.outcome ?? "—"}
-                    </span>
-                  </td>
-
                   <td style={{ textAlign: "right", fontFamily: "JetBrains Mono, monospace" }}>
                     <span
                       style={{
-                        color: pnlColor(trade.pnl_pct ?? trade.live_pnl_pct),
+                        color: pnlColor(trade.pnl_amount ?? trade.live_pnl_amt),
                         fontWeight: 600,
                       }}
                     >
-                      {trade.pnl_pct !== null && trade.pnl_pct !== undefined
-                        ? `${trade.pnl_pct > 0 ? "+" : ""}${trade.pnl_pct?.toFixed(2)}%`
-                        : trade.live_pnl_pct !== undefined
-                        ? `${trade.live_pnl_pct > 0 ? "+" : ""}${trade.live_pnl_pct?.toFixed(2)}%`
-                        : "Live"}
+                      {(() => {
+                        const amt = trade.pnl_amount ?? trade.live_pnl_amt;
+                        const pct = trade.pnl_pct ?? trade.live_pnl_pct;
+                        if (amt === undefined || amt === null) return "Live";
+                        const sign = amt > 0 ? "+" : amt < 0 ? "-" : "";
+                        const pctStr = pct !== undefined && pct !== null ? `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%` : "0.00%";
+                        return `${sign}₹${Math.abs(amt).toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })} (${pctStr})`;
+                      })()}
                     </span>
-                  </td>
-
-                  <td style={{ textAlign: "right", fontFamily: "JetBrains Mono, monospace" }}>
-                    <span style={{ color: pnlColor(trade.pnl_amount ?? trade.live_pnl_amt), fontWeight: 600 }}>
-                      {trade.pnl_amount !== null && trade.pnl_amount !== undefined
-                        ? `${trade.pnl_amount > 0 ? "+" : ""}₹${Math.abs(trade.pnl_amount).toLocaleString("en-IN")}`
-                        : trade.live_pnl_amt !== undefined
-                        ? `${trade.live_pnl_amt > 0 ? "+" : ""}₹${Math.abs(trade.live_pnl_amt).toLocaleString("en-IN", {maximumFractionDigits:2})}`
-                        : "Live"}
-                    </span>
-                  </td>
-
-                  <td style={{ textAlign: "right", color: "#94a3b8", fontFamily: "JetBrains Mono, monospace" }}>
-                    {trade.quantity ?? "—"}
                   </td>
 
                   <td style={{ textAlign: "right", color: "#60a5fa", fontFamily: "JetBrains Mono, monospace" }}>

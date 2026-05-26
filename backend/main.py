@@ -164,13 +164,16 @@ class ChartinkWebhook(BaseModel):
 
 
 # ── Email Notifications ───────────────────────────────────────────────────────
+email_lock = threading.Lock()
+
 def send_enter_email(stock: str, entry: float, target: float, stop_loss: float,
-                     scan_name: str, trigger_time: str):
+                      scan_name: str, trigger_time: str):
     """
     Sends an HTML email for every ENTER verdict.
     Requires SMTP_USER and SMTP_PASSWORD in .env (Gmail App Password).
     Fails silently so it never breaks the main alert flow.
     """
+    import time
     smtp_user  = os.getenv("SMTP_USER", "")
     smtp_pass  = os.getenv("SMTP_PASSWORD", "")
     to_email   = os.getenv("NOTIFICATION_EMAIL", "dubeysh18@gmail.com")
@@ -238,13 +241,21 @@ def send_enter_email(stock: str, entry: float, target: float, stop_loss: float,
         msg["To"]      = to_email
         msg.attach(MIMEText(html, "html"))
 
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
-            server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_user, to_email, msg.as_string())
-
-        logger.info(f"Email sent for {stock} ENTER to {to_email}")
+        with email_lock:
+            for attempt in range(3):
+                try:
+                    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
+                        server.login(smtp_user, smtp_pass)
+                        server.sendmail(smtp_user, to_email, msg.as_string())
+                    logger.info(f"Email sent for {stock} ENTER to {to_email} (attempt {attempt+1})")
+                    return
+                except Exception as smtp_err:
+                    logger.warning(f"Email send attempt {attempt+1} failed for {stock}: {smtp_err}")
+                    if attempt < 2:
+                        time.sleep(2)
+            logger.error(f"Email send completely failed for {stock} after 3 attempts")
     except Exception as e:
-        logger.error(f"Email send failed for {stock}: {e}")
+        logger.error(f"Email template/setup failed for {stock}: {e}")
 
 
 # ── Keep-alive ─────────────────────────────────────────────────────────────────
@@ -533,6 +544,16 @@ def get_live_prices(date: str = Query(None), db: Session = Depends(get_db)):
         .all()
     )
 
+    # Pre-fetch LTPs for all active alerts in one batch
+    active_alerts = []
+    for alert in enter_alerts:
+        bt = alert.backtest_result
+        if not (bt and bt.outcome not in ("PENDING", None)):
+            active_alerts.append(alert.stock)
+
+    from upstox_client import get_ltps
+    ltp_map = get_ltps(active_alerts) if active_alerts else {}
+
     result = []
     for alert in enter_alerts:
         ltp = None
@@ -546,9 +567,9 @@ def get_live_prices(date: str = Query(None), db: Session = Depends(get_db)):
             ltp = bt.exit_price
             pnl_pct = bt.pnl_pct
         else:
-            # Still active — fetch live LTP
+            # Still active — use batch LTP
             try:
-                ltp = get_ltp(alert.stock)
+                ltp = ltp_map.get(alert.stock.upper())
                 if ltp and alert.entry_price:
                     pnl_pct = round((ltp - alert.entry_price) / alert.entry_price * 100, 2)
                     if alert.target and ltp >= alert.target:
@@ -558,7 +579,7 @@ def get_live_prices(date: str = Query(None), db: Session = Depends(get_db)):
                     else:
                         status = "ACTIVE"
             except Exception as e:
-                logger.warning(f"live-prices: could not fetch LTP for {alert.stock}: {e}")
+                logger.warning(f"live-prices: could not process LTP for {alert.stock}: {e}")
 
         result.append({
             "stock":       alert.stock,
@@ -624,6 +645,18 @@ async def trigger_backtest(background_tasks: BackgroundTasks):
     return {"status": "started", "date": today, "message": "Backtest running in background. Refresh results in ~30 seconds."}
 
 
+def format_time_str(time_str: str | None) -> str:
+    if not time_str:
+        return "—"
+    time_str = time_str.strip().lower()
+    for fmt_pat in ("%H:%M:%S", "%H:%M", "%I:%M %p", "%I:%M%p"):
+        try:
+            dt = datetime.strptime(time_str, fmt_pat)
+            return dt.strftime("%I:%M %p").lower().lstrip("0")
+        except ValueError:
+            continue
+    return time_str
+
 @app.get("/api/backtest-results")
 def get_backtest_results(date: str = Query(None), db: Session = Depends(get_db)):
     """Return backtest results with summary stats."""
@@ -641,9 +674,9 @@ def get_backtest_results(date: str = Query(None), db: Session = Depends(get_db))
     for bt, alert in results:
         trades.append({
             "stock":        alert.stock,
-            "entry_time":   bt.entry_time,
+            "entry_time":   format_time_str(bt.entry_time),
             "entry_price":  bt.entry_price,
-            "exit_time":    bt.exit_time,
+            "exit_time":    format_time_str(bt.exit_time) if bt.outcome != "PENDING" else "—",
             "exit_price":   bt.exit_price,
             "outcome":      bt.outcome,
             "pnl_pct":      bt.pnl_pct,
@@ -687,6 +720,42 @@ def get_backtest_results(date: str = Query(None), db: Session = Depends(get_db))
 
 
 # ── Admin / Recovery ───────────────────────────────────────────────────────────
+
+@app.post("/api/admin/run-recovery")
+def run_production_recovery(db: Session = Depends(get_db)):
+    """
+    Retrospectively re-simulates all historical trades.
+    Deletes all old backtest results and re-runs the backtest simulation
+    for all unique alert dates in the database.
+    """
+    logger.info("Admin recovery: starting retrospective backtest...")
+    try:
+        # Get all unique dates from the Alert table where verdict is 'ENTER'
+        dates = db.query(Alert.trigger_date).filter(Alert.verdict == "ENTER").distinct().all()
+        dates = [d[0] for d in dates if d[0]]
+        dates.sort()
+        
+        logger.info(f"Admin recovery: Found unique dates: {dates}")
+        
+        # Delete all existing BacktestResult records to force full re-simulation
+        deleted_count = db.query(BacktestResult).delete()
+        db.commit()
+        logger.info(f"Admin recovery: Deleted {deleted_count} old backtest results.")
+        
+        results = {}
+        for date_str in dates:
+            res = run_backtest(date_str)
+            results[date_str] = {
+                "win_rate": res.get("win_rate"),
+                "net_pnl_amount": res.get("net_pnl_amount")
+            }
+        
+        return {"status": "success", "processed_dates": dates, "details": results}
+    except Exception as e:
+        logger.error(f"Admin recovery failed: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/admin/reprocess-errors")
 async def reprocess_error_alerts(
