@@ -170,10 +170,12 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
   const adjustedSummary = summary ? { ...summary } : null;
   const augmentedTrades = trades.map(t => {
     if (t.outcome === "PENDING" && livePrices[t.stock]) {
-      const ltp = livePrices[t.stock].ltp;
+      const lp = livePrices[t.stock];
+      const ltp = lp.ltp;
       if (ltp !== null) {
-        const pct = t.entry_price ? (ltp - t.entry_price) / t.entry_price * 100 : 0;
-        const amt = (t.quantity || 0) * (ltp - (t.entry_price || 0));
+        // Prefer server-computed pnl_amount (has correct quantity), fallback to client calc
+        const pct = lp.pnl_pct ?? (t.entry_price ? (ltp - t.entry_price) / t.entry_price * 100 : 0);
+        const amt = (lp as any).pnl_amount ?? ((t.quantity || 0) * (ltp - (t.entry_price || 0)));
         return { ...t, live_pnl_pct: pct, live_pnl_amt: amt, ltp };
       }
     }
@@ -504,17 +506,19 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
                   <td style={{ textAlign: "right", fontFamily: "JetBrains Mono, monospace" }}>
                     <span
                       style={{
-                        color: pnlColor(trade.pnl_amount ?? trade.live_pnl_amt),
+                        color: pnlColor(trade.pnl_amount ?? (trade as any).live_pnl_amt),
                         fontWeight: 600,
                       }}
                     >
                       {(() => {
-                        const amt = trade.pnl_amount ?? trade.live_pnl_amt;
-                        const pct = trade.pnl_pct ?? trade.live_pnl_pct;
+                        const amt = trade.pnl_amount ?? (trade as any).live_pnl_amt;
+                        const pct = trade.pnl_pct ?? (trade as any).live_pnl_pct;
                         if (amt === undefined || amt === null) return "Live";
+                        // Use Math.abs for the rupee amount + explicit sign prefix
                         const sign = amt > 0 ? "+" : amt < 0 ? "-" : "";
-                        const pctStr = pct !== undefined && pct !== null ? `${pct > 0 ? "+" : ""}${pct.toFixed(2)}%` : "0.00%";
-                        return `${sign}₹${Math.abs(amt).toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })} (${pctStr})`;
+                        const absPct = pct !== undefined && pct !== null ? Math.abs(pct).toFixed(2) : "0.00";
+                        const pctSign = pct !== undefined && pct !== null ? (pct >= 0 ? "+" : "-") : "";
+                        return `${sign}₹${Math.abs(amt).toLocaleString("en-IN", { minimumFractionDigits: 0, maximumFractionDigits: 2 })} (${pctSign}${absPct}%)`;
                       })()}
                     </span>
                   </td>
@@ -545,7 +549,7 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
         }}
       >
         <span>Auto-backtest: 15:30 IST (Mon–Fri)</span>
-        <span>Auto-refreshes every 60s</span>
+        <span>Auto-refreshes every 10s</span>
       </div>
 
       <style>{`

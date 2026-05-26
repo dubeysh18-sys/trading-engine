@@ -71,6 +71,8 @@ export interface LivePrice {
   stop_loss:   number | null;
   ltp:         number | null;
   pnl_pct:     number | null;
+  pnl_amount:  number | null;
+  quantity:    number | null;
   status:      "ACTIVE" | "PROFIT" | "LOSS" | "FLAT" | "PENDING";
 }
 

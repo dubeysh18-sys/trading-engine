@@ -545,37 +545,44 @@ def get_live_prices(date: str = Query(None), db: Session = Depends(get_db)):
         .all()
     )
 
-    # Pre-fetch LTPs for all active alerts in one batch
-    active_alerts = []
+    # Pre-fetch LTPs for all active (PENDING) alerts in one batch
+    active_stocks = []
     for alert in enter_alerts:
         bt = alert.backtest_result
         if not (bt and bt.outcome not in ("PENDING", None)):
-            active_alerts.append(alert.stock)
+            active_stocks.append(alert.stock)
 
     from upstox_client import get_ltps
-    ltp_map = get_ltps(active_alerts) if active_alerts else {}
+    ltp_map = get_ltps(active_stocks) if active_stocks else {}
 
     result = []
     for alert in enter_alerts:
         ltp = None
         pnl_pct = None
+        pnl_amount = None
         status = "PENDING"
+
+        entry = alert.entry_price
+        # Quantity used for position sizing (50k × 4x leverage)
+        quantity = int((50000 * 4) / entry) if entry else 0
 
         # Check if a finalized backtest result exists
         bt = alert.backtest_result
         if bt and bt.outcome not in ("PENDING", None):
-            status = bt.outcome  # PROFIT | LOSS | FLAT
-            ltp = bt.exit_price
-            pnl_pct = bt.pnl_pct
+            status     = bt.outcome  # PROFIT | LOSS | FLAT
+            ltp        = bt.exit_price
+            pnl_pct    = bt.pnl_pct
+            pnl_amount = bt.pnl_amount
         else:
-            # Still active — use batch LTP
+            # Still active — compute live floating P&L from batch LTP
             try:
                 ltp = ltp_map.get(alert.stock.upper())
-                if ltp and alert.entry_price:
-                    pnl_pct = round((ltp - alert.entry_price) / alert.entry_price * 100, 2)
+                if ltp and entry:
+                    pnl_pct    = round((ltp - entry) / entry * 100, 2)
+                    pnl_amount = round(quantity * (ltp - entry), 2)
                     if alert.target and ltp >= alert.target:
                         status = "PROFIT"
-                    elif alert.stop_loss and ltp <= alert.stop_loss:
+                    elif alert.stop_loss and alert.stop_loss < entry and ltp <= alert.stop_loss:
                         status = "LOSS"
                     else:
                         status = "ACTIVE"
@@ -585,11 +592,13 @@ def get_live_prices(date: str = Query(None), db: Session = Depends(get_db)):
         result.append({
             "stock":       alert.stock,
             "alert_id":    alert.id,
-            "entry_price": alert.entry_price,
+            "entry_price": entry,
             "target":      alert.target,
             "stop_loss":   alert.stop_loss,
             "ltp":         ltp,
             "pnl_pct":     pnl_pct,
+            "pnl_amount":  pnl_amount,
+            "quantity":    quantity,
             "status":      status,
         })
 
@@ -647,15 +656,22 @@ async def trigger_backtest(background_tasks: BackgroundTasks):
 
 
 def format_time_str(time_str: str | None) -> str:
+    """Normalize any time string to '9:15 am' / '3:25 pm' style (no leading zero)."""
     if not time_str:
         return "—"
     time_str = time_str.strip().lower()
-    for fmt_pat in ("%H:%M:%S", "%H:%M", "%I:%M %p", "%I:%M%p"):
+    # Try all known formats, including already-formatted ones
+    for fmt_pat in ("%I:%M %p", "%I:%M%p", "%H:%M:%S", "%H:%M"):
         try:
             dt = datetime.strptime(time_str, fmt_pat)
-            return dt.strftime("%I:%M %p").lower().lstrip("0")
+            formatted = dt.strftime("%I:%M %p").lower()
+            # Remove leading zero from hour (e.g. '09:15 am' → '9:15 am')
+            if formatted.startswith("0"):
+                formatted = formatted[1:]
+            return formatted
         except ValueError:
             continue
+    # Return as-is if no format matched (e.g. already clean '3:25 pm')
     return time_str
 
 @app.get("/api/backtest-results")
