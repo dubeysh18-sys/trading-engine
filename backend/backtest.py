@@ -352,9 +352,10 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
         else:
             outcome = "FLAT"
 
-    pnl_pct = round((exit_price - entry_price) / entry_price * 100, 2)
+    pnl_pct = float(round((exit_price - entry_price) / entry_price * 100, 2))
     quantity = int((50000 * 4) / entry_price)
-    pnl_amount = round(quantity * (exit_price - entry_price), 2)
+    pnl_amount = float(round(quantity * (exit_price - entry_price), 2))
+    exit_price = float(exit_price)
 
     if existing:
         # Update existing PENDING record
