@@ -96,6 +96,17 @@ def _pullback_watcher():
         logger.error(f"Pullback watcher failed: {e}")
 
 
+def _self_keepalive():
+    """Pings our own health endpoint to prevent Render free tier from spinning down."""
+    import requests as _req
+    try:
+        base_url = os.getenv("RENDER_EXTERNAL_URL", "http://localhost:10000")
+        _req.get(f"{base_url}/health", timeout=10)
+        logger.debug("Self-keepalive ping sent.")
+    except Exception as e:
+        logger.debug(f"Self-keepalive ping failed (non-critical): {e}")
+
+
 # ── App Lifecycle ──────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -111,24 +122,34 @@ async def lifespan(app: FastAPI):
         day_of_week="mon-fri",
         id="eod_backtest"
     )
-    # Schedule Live Tracker every minute between 9:15 and 15:30
+    # Schedule Live Tracker every minute between 9:00 and 16:00 IST
+    # Wide window catches 9:15 AM open, 3:25 PM square-off, and EOD candle data
     scheduler.add_job(
         _live_tracker,
         trigger="cron",
-        hour="9-15", minute="*",
+        hour="9-16", minute="*",
         day_of_week="mon-fri",
         id="live_tracker"
     )
-    # Schedule Pullback Watcher every minute between 9:15 and 15:30
+    # Schedule Pullback Watcher every minute between 9:00 and 16:00 IST
     scheduler.add_job(
         _pullback_watcher,
         trigger="cron",
-        hour="9-15", minute="*",
+        hour="9-16", minute="*",
         day_of_week="mon-fri",
         id="pullback_watcher"
     )
+    # Self-keepalive: ping our own health every 5 minutes to prevent Render from sleeping
+    # This is the critical job — Render free tier spins down after 15 min of inactivity
+    # Without this, the live tracker and EOD backtest will never fire during market hours
+    scheduler.add_job(
+        _self_keepalive,
+        trigger="cron",
+        minute="*/5",
+        id="self_keepalive"
+    )
     scheduler.start()
-    logger.info("APScheduler started — Live tracking & Pullback Watcher active. EOD backtest at 15:30.")
+    logger.info("APScheduler started — Live tracking & Pullback Watcher active. EOD backtest at 15:30. Self-keepalive every 5 min.")
 
     yield
     scheduler.shutdown(wait=False)
@@ -833,6 +854,84 @@ def restore_missing_records(date: str = Query(None), db: Session = Depends(get_d
     
     return {"status": "success", "date": query_date, "alerts_found": len(alerts), "records_created": created}
 
+
+@app.post("/api/admin/fix-inverted-sl")
+def fix_inverted_sl(date: str = Query(None), db: Session = Depends(get_db)):
+    """
+    Scan all ENTER alerts for a date where stop_loss >= entry_price (inverted/corrupt SL).
+    Clamps SL to entry * 0.995 (0.5% below entry).
+    Also corrects any existing BacktestResult records that used the bad SL.
+    """
+    query_date = date or datetime.now(IST).strftime("%Y-%m-%d")
+    alerts = db.query(Alert).filter(
+        Alert.trigger_date == query_date,
+        Alert.verdict == "ENTER"
+    ).all()
+
+    fixed = []
+    for alert in alerts:
+        entry = alert.entry_price
+        sl = alert.stop_loss
+        if entry and sl and sl >= entry:
+            corrected_sl = round(entry * 0.995, 2)
+            logger.warning(
+                f"fix-inverted-sl: {alert.stock} SL={sl} >= Entry={entry}. "
+                f"Clamping to {corrected_sl}"
+            )
+            alert.stop_loss = corrected_sl
+            fixed.append({"stock": alert.stock, "old_sl": sl, "new_sl": corrected_sl, "entry": entry})
+
+    if fixed:
+        db.commit()
+        logger.info(f"fix-inverted-sl: Corrected {len(fixed)} alerts for {query_date}")
+
+    return {"status": "success", "date": query_date, "fixed_count": len(fixed), "details": fixed}
+
+
+@app.post("/api/admin/eod-finalize")
+def eod_finalize(date: str = Query(None), db: Session = Depends(get_db)):
+    """
+    Force-finalize all PENDING trades for a date using the EOD candle-based backtest.
+    
+    This works even AFTER market close because it uses historical 5-min candle data
+    (which Upstox makes available from the NEXT trading day onwards).
+    
+    Call this the MORNING AFTER a trading day to finalize any trades that were
+    PENDING due to Render sleeping during market hours.
+    
+    Workflow:
+      1. First run /api/admin/fix-inverted-sl?date=YYYY-MM-DD to clean up bad SL values
+      2. Then run /api/admin/eod-finalize?date=YYYY-MM-DD to simulate the day's trades
+    """
+    from backtest import run_backtest
+    query_date = date or datetime.now(IST).strftime("%Y-%m-%d")
+
+    # Count pending before
+    pending_before = db.query(BacktestResult).join(Alert).filter(
+        Alert.trigger_date == query_date,
+        BacktestResult.outcome == "PENDING"
+    ).count()
+
+    logger.info(f"EOD finalize for {query_date}: {pending_before} PENDING trades")
+
+    try:
+        result = run_backtest(query_date)
+        # Refresh pending count
+        db.expire_all()
+        pending_after = db.query(BacktestResult).join(Alert).filter(
+            Alert.trigger_date == query_date,
+            BacktestResult.outcome == "PENDING"
+        ).count()
+        return {
+            "status": "success",
+            "date": query_date,
+            "pending_before": pending_before,
+            "pending_after": pending_after,
+            "backtest_result": result
+        }
+    except Exception as e:
+        logger.error(f"EOD finalize failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/admin/reprocess-errors")

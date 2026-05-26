@@ -21,3 +21,5 @@ services:
           property: connectionString   # Render injects the live PostgreSQL URL here
       - key: APP_ENV
         value: production
+      - key: RENDER_EXTERNAL_URL
+        sync: false   # Set to https://trading-engine-58hz.onrender.com (no trailing slash)
