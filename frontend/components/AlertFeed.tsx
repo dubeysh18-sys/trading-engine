@@ -45,19 +45,22 @@ const LEVERAGE_OPTIONS = [
 ];
 
 /* ── Dropdown component ───────────────────────────────────────────── */
-function StyledSelect({
+function StyledSelect<T extends string | number>({
   options, value, onChange, id,
 }: {
-  options: { label: string; value: number }[];
-  value: number;
-  onChange: (v: number) => void;
+  options: { label: string; value: T }[];
+  value: T;
+  onChange: (v: T) => void;
   id: string;
 }) {
   return (
     <select
       id={id}
       value={value}
-      onChange={(e) => onChange(Number(e.target.value))}
+      onChange={(e) => {
+        const val = e.target.value;
+        onChange((typeof value === 'number' ? Number(val) : val) as T);
+      }}
       style={{
         background: "#0f1923",
         border: "1px solid #1e2d45",
@@ -76,7 +79,7 @@ function StyledSelect({
       }}
     >
       {options.map((o) => (
-        <option key={o.value} value={o.value}>{o.label}</option>
+        <option key={o.value.toString()} value={o.value}>{o.label}</option>
       ))}
     </select>
   );
@@ -103,6 +106,7 @@ export default function AlertFeed() {
   const [livePrices, setLivePrices] = useState<Record<number, LivePrice>>({});
   const [capital, setCapital]       = useState(50000);
   const [leverage, setLeverage]     = useState(4);
+  const [filter, setFilter]         = useState<"ALL" | "ENTER" | "WAIT" | "SKIP">("ALL");
   const [loading, setLoading]       = useState(true);
   const [error, setError]           = useState<string | null>(null);
   const [lastFetch, setLastFetch]   = useState<Date | null>(null);
@@ -211,7 +215,18 @@ export default function AlertFeed() {
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {/* Position sizing dropdowns */}
+          {/* Filters and options */}
+          <StyledSelect
+            id="filter-select"
+            options={[
+              { label: "All Signals", value: "ALL" },
+              { label: "🟢 Enter Only", value: "ENTER" },
+              { label: "🟡 Wait Only", value: "WAIT" },
+              { label: "🔴 Skip Only", value: "SKIP" },
+            ]}
+            value={filter}
+            onChange={setFilter}
+          />
           <StyledSelect
             id="capital-select"
             options={CAPITAL_OPTIONS}
@@ -269,27 +284,50 @@ export default function AlertFeed() {
 
       {/* ── Table ──────────────────────────────────────────────── */}
       <div className="card-body" style={{ flex: 1, padding: 0 }}>
-        {loading && alerts.length === 0 ? (
-          <div style={{ padding: 40, textAlign: "center", color: "#4b5563" }}>
-            <RefreshCw size={20} style={{ margin: "0 auto 10px", display: "block", opacity: 0.4 }} />
-            <div style={{ fontSize: 13 }}>Loading alerts...</div>
-          </div>
-        ) : error ? (
-          <div style={{
-            margin: 16, padding: "12px 16px",
-            background: "rgba(255,77,77,0.08)", border: "1px solid rgba(255,77,77,0.2)",
-            borderRadius: 8, color: "var(--accent-red)", fontSize: 12,
-          }}>
-            ⚠ {error}
-          </div>
-        ) : alerts.length === 0 ? (
-          <div style={{ padding: 40, textAlign: "center", color: "#4b5563" }}>
-            <div style={{ fontSize: 28, marginBottom: 10 }}>📡</div>
-            <div style={{ fontSize: 13 }}>Waiting for Chartink alerts...</div>
-            <div style={{ fontSize: 11, marginTop: 6 }}>Alerts appear within seconds of your scan firing.</div>
-          </div>
-        ) : (
-          <table className="data-table" style={{ tableLayout: "fixed", width: "100%" }}>
+        {(() => {
+          const visibleAlerts = alerts.filter(a => filter === "ALL" || a.verdict === filter);
+
+          if (loading && alerts.length === 0) {
+            return (
+              <div style={{ padding: 40, textAlign: "center", color: "#4b5563" }}>
+                <RefreshCw size={20} style={{ margin: "0 auto 10px", display: "block", opacity: 0.4 }} />
+                <div style={{ fontSize: 13 }}>Loading alerts...</div>
+              </div>
+            );
+          }
+          
+          if (error) {
+            return (
+              <div style={{
+                margin: 16, padding: "12px 16px",
+                background: "rgba(255,77,77,0.08)", border: "1px solid rgba(255,77,77,0.2)",
+                borderRadius: 8, color: "var(--accent-red)", fontSize: 12,
+              }}>
+                ⚠ {error}
+              </div>
+            );
+          }
+
+          if (alerts.length === 0) {
+            return (
+              <div style={{ padding: 40, textAlign: "center", color: "#4b5563" }}>
+                <div style={{ fontSize: 28, marginBottom: 10 }}>📡</div>
+                <div style={{ fontSize: 13 }}>Waiting for Chartink alerts...</div>
+                <div style={{ fontSize: 11, marginTop: 6 }}>Alerts appear within seconds of your scan firing.</div>
+              </div>
+            );
+          }
+
+          if (visibleAlerts.length === 0) {
+            return (
+              <div style={{ padding: 40, textAlign: "center", color: "#4b5563" }}>
+                <div style={{ fontSize: 13 }}>No {filter.toLowerCase()} signals today.</div>
+              </div>
+            );
+          }
+
+          return (
+            <table className="data-table" style={{ tableLayout: "fixed", width: "100%" }}>
             <colgroup>
               <col style={{ width: 52 }} />
               <col style={{ width: 90 }} />
@@ -315,7 +353,7 @@ export default function AlertFeed() {
               </tr>
             </thead>
             <tbody>
-              {alerts.map((alert) => {
+              {visibleAlerts.map((alert) => {
                 const lp     = livePrices[alert.id] ?? null;
                 const qty    = alert.verdict === "ENTER" ? calcQty(alert.entry, capital, leverage) : null;
                 const exp    = calcExposure(qty, alert.entry);
@@ -455,7 +493,8 @@ export default function AlertFeed() {
               })}
             </tbody>
           </table>
-        )}
+          );
+        })()}
       </div>
 
       {/* ── Footer ─────────────────────────────────────────────── */}

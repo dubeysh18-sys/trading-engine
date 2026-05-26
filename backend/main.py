@@ -185,7 +185,12 @@ def send_enter_email(stock: str, entry: float, target: float, stop_loss: float,
         rr         = round(target_pct / sl_pct, 1) if sl_pct else "N/A"
 
         html = f"""
-<html><body style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,sans-serif">
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,sans-serif">
 <div style="max-width:560px;margin:24px auto;background:#0f1117;border-radius:14px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.4)">
   <div style="background:linear-gradient(135deg,#16a34a,#22c55e);padding:24px 28px;text-align:center">
     <div style="font-size:36px;margin-bottom:6px">🟢</div>
@@ -193,24 +198,24 @@ def send_enter_email(stock: str, entry: float, target: float, stop_loss: float,
     <p style="margin:6px 0 0;color:rgba(255,255,255,.75);font-size:13px">{scan_name} &bull; {trigger_time}</p>
   </div>
   <div style="padding:24px 28px">
-    <div style="font-size:36px;font-weight:700;color:#22c55e;font-family:monospace;letter-spacing:1px">{stock}</div>
-    <div style="display:flex;gap:12px;margin:20px 0">
-      <div style="flex:1;background:#1e2d45;border-radius:10px;padding:16px;text-align:center">
+    <div style="font-size:32px;font-weight:700;color:#ffffff;font-family:monospace;letter-spacing:1px;text-align:center;margin-bottom:12px">{stock}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:12px;margin:20px 0">
+      <div style="flex:1;min-width:110px;background:#1e2d45;border-radius:10px;padding:16px;text-align:center">
         <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Entry</div>
-        <div style="font-size:22px;font-weight:700;color:#22c55e;font-family:monospace">&zwj;&#8377;{entry:.2f}</div>
+        <div style="font-size:20px;font-weight:700;color:#22c55e;font-family:monospace">&zwj;&#8377;{entry:.2f}</div>
       </div>
-      <div style="flex:1;background:#1e2d45;border-radius:10px;padding:16px;text-align:center">
+      <div style="flex:1;min-width:110px;background:#1e2d45;border-radius:10px;padding:16px;text-align:center">
         <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Target</div>
-        <div style="font-size:22px;font-weight:700;color:#60a5fa;font-family:monospace">&zwj;&#8377;{target:.2f}</div>
+        <div style="font-size:20px;font-weight:700;color:#60a5fa;font-family:monospace">&zwj;&#8377;{target:.2f}</div>
         <div style="font-size:11px;color:#4b5563;margin-top:2px">+{target_pct}%</div>
       </div>
-      <div style="flex:1;background:#1e2d45;border-radius:10px;padding:16px;text-align:center">
+      <div style="flex:1;min-width:110px;background:#1e2d45;border-radius:10px;padding:16px;text-align:center">
         <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Stop Loss</div>
-        <div style="font-size:22px;font-weight:700;color:#f87171;font-family:monospace">&zwj;&#8377;{stop_loss:.2f}</div>
+        <div style="font-size:20px;font-weight:700;color:#f87171;font-family:monospace">&zwj;&#8377;{stop_loss:.2f}</div>
         <div style="font-size:11px;color:#4b5563;margin-top:2px">-{sl_pct}%</div>
       </div>
     </div>
-    <div style="background:#1e2d45;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#94a3b8">
+    <div style="background:#1e2d45;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#94a3b8;text-align:center">
       Risk/Reward: <strong style="color:#e2e8f0">{rr}:1</strong>
     </div>
     <a href="https://kite.zerodha.com/chart/web/ciq/NSE/{stock}/EQ"

@@ -257,3 +257,30 @@ html, body {
   color: var(--text-secondary);
   margin-top: 2px;
 }
+
+/* ── Responsive Mobile Utilities ─────────────────────────────── */
+.dashboard-grid {
+  grid-template-columns: 1fr 1fr;
+}
+
+@media (max-width: 1024px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .data-table {
+    min-width: 650px; /* Force scroll instead of squishing columns */
+  }
+  .card-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .card-header > div:nth-child(2) {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+}

@@ -24,10 +24,10 @@ export default function DashboardPage() {
 
       {/* ── Main Workspace ────────────────────────────────── */}
       <main
+        className="dashboard-grid"
         style={{
           flex: 1,
           display: "grid",
-          gridTemplateColumns: "1fr 1fr",
           gap: 16,
           padding: "16px",
           maxWidth: "100%",
