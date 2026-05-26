@@ -199,22 +199,26 @@ def send_enter_email(stock: str, entry: float, target: float, stop_loss: float,
   </div>
   <div style="padding:24px 28px">
     <div style="font-size:32px;font-weight:700;color:#ffffff;font-family:monospace;letter-spacing:1px;text-align:center;margin-bottom:12px">{stock}</div>
-    <div style="display:flex;flex-wrap:wrap;gap:12px;margin:20px 0">
-      <div style="flex:1;min-width:110px;background:#1e2d45;border-radius:10px;padding:16px;text-align:center">
-        <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Entry</div>
-        <div style="font-size:20px;font-weight:700;color:#22c55e;font-family:monospace">&zwj;&#8377;{entry:.2f}</div>
-      </div>
-      <div style="flex:1;min-width:110px;background:#1e2d45;border-radius:10px;padding:16px;text-align:center">
-        <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Target</div>
-        <div style="font-size:20px;font-weight:700;color:#60a5fa;font-family:monospace">&zwj;&#8377;{target:.2f}</div>
-        <div style="font-size:11px;color:#4b5563;margin-top:2px">+{target_pct}%</div>
-      </div>
-      <div style="flex:1;min-width:110px;background:#1e2d45;border-radius:10px;padding:16px;text-align:center">
-        <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Stop Loss</div>
-        <div style="font-size:20px;font-weight:700;color:#f87171;font-family:monospace">&zwj;&#8377;{stop_loss:.2f}</div>
-        <div style="font-size:11px;color:#4b5563;margin-top:2px">-{sl_pct}%</div>
-      </div>
-    </div>
+    <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:20px 0">
+      <tr>
+        <td width="32%" style="background:#1e2d45;border-radius:10px;padding:16px 8px;text-align:center">
+          <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Entry</div>
+          <div style="font-size:18px;font-weight:700;color:#22c55e;font-family:monospace">&zwj;&#8377;{entry:.2f}</div>
+        </td>
+        <td width="2%"></td>
+        <td width="32%" style="background:#1e2d45;border-radius:10px;padding:16px 8px;text-align:center">
+          <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Target</div>
+          <div style="font-size:18px;font-weight:700;color:#60a5fa;font-family:monospace">&zwj;&#8377;{target:.2f}</div>
+          <div style="font-size:11px;color:#4b5563;margin-top:2px">+{target_pct}%</div>
+        </td>
+        <td width="2%"></td>
+        <td width="32%" style="background:#1e2d45;border-radius:10px;padding:16px 8px;text-align:center">
+          <div style="font-size:10px;color:#94a3b8;margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em">Stop Loss</div>
+          <div style="font-size:18px;font-weight:700;color:#f87171;font-family:monospace">&zwj;&#8377;{stop_loss:.2f}</div>
+          <div style="font-size:11px;color:#4b5563;margin-top:2px">-{sl_pct}%</div>
+        </td>
+      </tr>
+    </table>
     <div style="background:#1e2d45;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#94a3b8;text-align:center">
       Risk/Reward: <strong style="color:#e2e8f0">{rr}:1</strong>
     </div>

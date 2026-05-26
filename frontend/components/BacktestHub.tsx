@@ -11,9 +11,11 @@ import {
 } from "lucide-react";
 import {
   fetchBacktestResults,
+  fetchLivePrices,
   triggerBacktest,
   type BacktestTrade,
   type BacktestSummary,
+  type LivePrice,
 } from "@/lib/api";
 
 function fmt(val: number | null | undefined, decimals = 2): string {
@@ -65,6 +67,7 @@ function OutcomeIcon({ outcome }: { outcome: string | null }) {
 export default function BacktestHub({ selectedDate }: { selectedDate: string }) {
   const [summary, setSummary]       = useState<BacktestSummary | null>(null);
   const [trades, setTrades]         = useState<BacktestTrade[]>([]);
+  const [livePrices, setLivePrices] = useState<Record<number, LivePrice>>({});
   const [loading, setLoading]       = useState(true);
   const [running, setRunning]       = useState(false);
   const [runMsg, setRunMsg]         = useState<string | null>(null);
@@ -78,9 +81,17 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
 
   const refresh = useCallback(async () => {
     try {
-      const data = await fetchBacktestResults(selectedDate);
+      const [data, priceData] = await Promise.all([
+        fetchBacktestResults(selectedDate),
+        fetchLivePrices(selectedDate).catch(() => []),
+      ]);
       setSummary(data.summary);
       setTrades(data.trades);
+      
+      const map: Record<number, LivePrice> = {};
+      priceData.forEach((p: LivePrice) => { map[p.alert_id] = p; });
+      setLivePrices(map);
+      
       setLastFetch(new Date());
       setError(null);
     } catch (e: unknown) {
@@ -92,7 +103,7 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 30_000); // poll every 30s
+    const id = setInterval(refresh, 10_000); // poll every 10s for real-time live floating P&L
     return () => clearInterval(id);
   }, [refresh]);
 
@@ -130,6 +141,37 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
       : summary.win_rate_pct >= 40
       ? "var(--accent-yellow)"
       : "var(--accent-red)";
+
+  // Compute live adjusted summary
+  const adjustedSummary = summary ? { ...summary } : null;
+  const augmentedTrades = trades.map(t => {
+    if (t.outcome === "PENDING" && livePrices[t.alert_id]) {
+      const ltp = livePrices[t.alert_id].ltp;
+      const pct = (ltp - t.entry_price) / t.entry_price * 100;
+      const amt = (t.quantity || 0) * (ltp - t.entry_price);
+      return { ...t, live_pnl_pct: pct, live_pnl_amt: amt, ltp };
+    }
+    return t;
+  });
+
+  if (adjustedSummary) {
+    let totalPct = summary!.net_pnl_pct * summary!.backtested;
+    let totalAmt = summary!.net_pnl_amount;
+    let countedTrades = summary!.backtested;
+
+    for (const t of augmentedTrades) {
+      if (t.outcome === "PENDING" && "live_pnl_pct" in t) {
+        totalPct += (t as any).live_pnl_pct;
+        totalAmt += (t as any).live_pnl_amt;
+        countedTrades++;
+      }
+    }
+    
+    if (countedTrades > 0) {
+      adjustedSummary.net_pnl_pct = totalPct / countedTrades;
+      adjustedSummary.net_pnl_amount = totalAmt;
+    }
+  }
 
   return (
     <div className="card" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -243,14 +285,14 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
           value={
             loading
               ? "…"
-              : summary && summary.backtested > 0
-              ? `${summary.win_rate_pct}%`
+              : adjustedSummary && adjustedSummary.backtested > 0
+              ? `${adjustedSummary.win_rate_pct}%`
               : "—"
           }
           color={winRateColor}
           sub={
-            summary && summary.backtested > 0
-              ? `${summary.wins}W / ${summary.losses}L / ${summary.flats}F`
+            adjustedSummary && adjustedSummary.backtested > 0
+              ? `${adjustedSummary.wins}W / ${adjustedSummary.losses}L / ${adjustedSummary.flats}F`
               : undefined
           }
         />
@@ -259,32 +301,32 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
           value={
             loading
               ? "…"
-              : summary && summary.backtested > 0
-              ? `${summary.net_pnl_pct > 0 ? "+" : ""}${summary.net_pnl_pct}%`
+              : adjustedSummary && (adjustedSummary.backtested > 0 || augmentedTrades.some(t => t.outcome === "PENDING"))
+              ? `${adjustedSummary.net_pnl_pct > 0 ? "+" : ""}${adjustedSummary.net_pnl_pct.toFixed(2)}%`
               : "—"
           }
           color={
-            summary && summary.net_pnl_pct > 0
+            adjustedSummary && adjustedSummary.net_pnl_pct > 0
               ? "var(--accent-green)"
-              : summary && summary.net_pnl_pct < 0
+              : adjustedSummary && adjustedSummary.net_pnl_pct < 0
               ? "var(--accent-red)"
               : "#94a3b8"
           }
-          sub="Average % per trade"
+          sub="Average % per trade (inc. live)"
         />
         <StatCard
           label="Net P&L (₹)"
           value={
             loading
               ? "…"
-              : summary && summary.backtested > 0
-              ? `${summary.net_pnl_amount > 0 ? "+" : ""}₹${summary.net_pnl_amount.toLocaleString("en-IN")}`
+              : adjustedSummary && (adjustedSummary.backtested > 0 || augmentedTrades.some(t => t.outcome === "PENDING"))
+              ? `${adjustedSummary.net_pnl_amount > 0 ? "+" : ""}₹${adjustedSummary.net_pnl_amount.toLocaleString("en-IN", {maximumFractionDigits:2})}`
               : "—"
           }
           color={
-            summary && summary.net_pnl_amount > 0
+            adjustedSummary && adjustedSummary.net_pnl_amount > 0
               ? "var(--accent-green)"
-              : summary && summary.net_pnl_amount < 0
+              : adjustedSummary && adjustedSummary.net_pnl_amount < 0
               ? "var(--accent-red)"
               : "#94a3b8"
           }
@@ -359,7 +401,7 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
               </tr>
             </thead>
             <tbody>
-              {trades.map((trade, idx) => (
+              {augmentedTrades.map((trade: any, idx) => (
                 <tr key={idx} className="animate-fade-in">
                   <td>
                     <span
@@ -399,7 +441,9 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
                       color: "#e2e8f0",
                     }}
                   >
-                    {fmt(trade.exit_price)}
+                    {trade.outcome === "PENDING" && trade.ltp 
+                      ? <span style={{ color: "var(--accent-yellow)" }}>{fmt(trade.ltp)}</span>
+                      : fmt(trade.exit_price)}
                   </td>
 
                   <td>
@@ -421,20 +465,24 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
                   <td style={{ textAlign: "right", fontFamily: "JetBrains Mono, monospace" }}>
                     <span
                       style={{
-                        color: pnlColor(trade.pnl_pct),
+                        color: pnlColor(trade.pnl_pct ?? trade.live_pnl_pct),
                         fontWeight: 600,
                       }}
                     >
                       {trade.pnl_pct !== null && trade.pnl_pct !== undefined
                         ? `${trade.pnl_pct > 0 ? "+" : ""}${trade.pnl_pct?.toFixed(2)}%`
+                        : trade.live_pnl_pct !== undefined
+                        ? `${trade.live_pnl_pct > 0 ? "+" : ""}${trade.live_pnl_pct?.toFixed(2)}%`
                         : "Live"}
                     </span>
                   </td>
 
                   <td style={{ textAlign: "right", fontFamily: "JetBrains Mono, monospace" }}>
-                    <span style={{ color: pnlColor(trade.pnl_amount), fontWeight: 600 }}>
+                    <span style={{ color: pnlColor(trade.pnl_amount ?? trade.live_pnl_amt), fontWeight: 600 }}>
                       {trade.pnl_amount !== null && trade.pnl_amount !== undefined
                         ? `${trade.pnl_amount > 0 ? "+" : ""}₹${Math.abs(trade.pnl_amount).toLocaleString("en-IN")}`
+                        : trade.live_pnl_amt !== undefined
+                        ? `${trade.live_pnl_amt > 0 ? "+" : ""}₹${Math.abs(trade.live_pnl_amt).toLocaleString("en-IN", {maximumFractionDigits:2})}`
                         : "Live"}
                     </span>
                   </td>
