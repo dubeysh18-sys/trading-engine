@@ -200,7 +200,7 @@ export default function BacktestHub({ selectedDate }: { selectedDate: string }) 
   }
 
   // Sort augmented trades
-  const sortedTrades = [...augmentedTrades].sort((a, b) => {
+  const sortedTrades = [...augmentedTrades].sort((a: any, b: any) => {
     if (!sortField) return 0;
 
     let valA = 0;
