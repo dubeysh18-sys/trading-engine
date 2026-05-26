@@ -56,7 +56,7 @@ def _simulate(df, trigger_time_str, entry_price, target, stop_loss, trigger_date
         return "NO_DATA", None, None
 
     # Time filter
-    square_off_time = time(15, 20)
+    square_off_time = time(15, 10)
     df["time_only"] = df["timestamp"].dt.time
     post_trigger = df[
         (df["time_only"] >= trigger_time) &
@@ -71,7 +71,7 @@ def _simulate(df, trigger_time_str, entry_price, target, stop_loss, trigger_date
     if len(post_trigger) < 2:
         exit_price = float(entry_candle["close"])
         return ("PROFIT" if exit_price > entry_price else
-                "LOSS" if exit_price < entry_price else "FLAT"), "3:25 pm", exit_price
+                "LOSS" if exit_price < entry_price else "FLAT"), "3:15 pm", exit_price
 
     # Skip entry candle; check from second candle onwards
     trade_candles = post_trigger.iloc[1:]
@@ -95,7 +95,7 @@ def _simulate(df, trigger_time_str, entry_price, target, stop_loss, trigger_date
         exit_price = float(post_trigger.iloc[-1]["close"])
         outcome = ("PROFIT" if exit_price > entry_price else
                    "LOSS" if exit_price < entry_price else "FLAT")
-        exit_time_str = "3:25 pm"
+        exit_time_str = "3:15 pm"
 
     return outcome, exit_time_str, float(exit_price)
 
@@ -115,16 +115,12 @@ friday = make_candles("2026-05-23", [
     ("15:00:00", 320, 325, 318, 322),
     ("15:05:00", 322, 324, 303, 320),  # low=303 would trip SL!
     ("15:10:00", 320, 323, 319, 321),
-    ("15:15:00", 321, 324, 320, 323),
-    ("15:20:00", 323, 325, 321, 324),
 ])
 monday = make_candles("2026-05-26", [
     ("09:15:00", 319, 323, 317, 321),
     ("15:00:00", 322, 325, 319, 323),  # entry candle
     ("15:05:00", 323, 326, 319, 324),  # safe (low=319 >> SL=303)
     ("15:10:00", 324, 327, 322, 325),
-    ("15:15:00", 325, 328, 323, 326),
-    ("15:20:00", 326, 328, 324, 327),
 ])
 df_mixed = pd.concat([friday, monday], ignore_index=True)
 
@@ -133,9 +129,9 @@ outcome, exit_time, exit_price = _simulate(
 )
 check("Date filter excludes Friday candles", outcome != "LOSS",
       f"Got outcome={outcome} exit_time={exit_time}")
-check("Auto-square-off at 3:25 pm", exit_time == "3:25 pm",
+check("Auto-square-off at 3:15 pm", exit_time == "3:15 pm",
       f"Got exit_time={exit_time}")
-check("Exit price is Monday 15:20 close (327)", abs(exit_price - 327.0) < 0.01,
+check("Exit price is Monday 15:10 close (325)", abs(exit_price - 325.0) < 0.01,
       f"Got exit_price={exit_price}")
 
 
@@ -145,7 +141,6 @@ df = make_candles("2026-05-26", [
     ("15:00:00", 322, 325, 303, 322),  # entry candle, low hits SL - must be SKIPPED
     ("15:05:00", 322, 326, 319, 324),  # safe candle
     ("15:10:00", 324, 327, 321, 325),
-    ("15:20:00", 326, 328, 324, 327),
 ])
 outcome, exit_time, exit_price = _simulate(
     df.copy(), "3:00 pm", 322.0, 360.0, 303.0, "2026-05-26"
@@ -160,8 +155,6 @@ check("Trade continues after entry candle", outcome != "LOSS" or exit_time != "3
 print("\n[ TEST 3 ] SL guard - SL >= entry must be clamped to entry * 0.995")
 df = make_candles("2026-05-26", [
     ("15:10:00", 279.85, 283.5, 279.0, 280.5),
-    ("15:15:00", 280.5, 284.5, 280.0, 282.9),
-    ("15:20:00", 282.9, 283.5, 282.0, 282.9),
 ])
 outcome, exit_time, exit_price = _simulate(
     df.copy(), "3:10 pm", 279.85, 284.35, 281.95, "2026-05-26"
@@ -202,14 +195,14 @@ check("Exit time is 12:05 pm (low=4018 <= SL=4018.68)", exit_time == "12:05 pm",
 
 
 # TEST 6: Auto-square-off single candle
-print("\n[ TEST 6 ] Auto-square-off at 3:25 for late entries (single candle)")
+print("\n[ TEST 6 ] Auto-square-off at 3:15 for late entries (single candle)")
 df = make_candles("2026-05-26", [
-    ("15:20:00", 451.5, 455.0, 441.0, 442.05),
+    ("15:10:00", 451.5, 455.0, 441.0, 442.05),
 ])
 outcome, exit_time, exit_price = _simulate(
-    df.copy(), "3:20 pm", 451.5, 471.9, 441.3, "2026-05-26"
+    df.copy(), "3:10 pm", 451.5, 471.9, 441.3, "2026-05-26"
 )
-check("Single-candle: exit_time = 3:25 pm", exit_time == "3:25 pm", f"Got {exit_time}")
+check("Single-candle: exit_time = 3:15 pm", exit_time == "3:15 pm", f"Got {exit_time}")
 check("Exit price = close (442.05)", abs(exit_price - 442.05) < 0.01, f"Got {exit_price}")
 check("Outcome = LOSS (442.05 < 451.5)", outcome == "LOSS", f"Got {outcome}")
 
@@ -236,7 +229,7 @@ for s, expected in formats_to_test:
 print("\n[ TEST 8 ] _fmt_time produces clean strings")
 cases = [
     (time(9, 15),  "9:15 am"),
-    (time(15, 25), "3:25 pm"),
+    (time(15, 15), "3:15 pm"),
     (time(12, 30), "12:30 pm"),
     (time(11, 40), "11:40 am"),
     (time(15, 0),  "3:00 pm"),

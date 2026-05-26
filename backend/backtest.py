@@ -61,7 +61,7 @@ def track_live_trades():
         now_time = now_ist.time()
         
         # Are we at or past square off time?
-        force_square_off = now_time >= time(15, 25)
+        force_square_off = now_time >= time(15, 15)
         
         pending_trades = db.query(BacktestResult).join(Alert).filter(
             Alert.trigger_date == today,
@@ -92,7 +92,7 @@ def track_live_trades():
                 exit_price = None
                 exit_time = None
                 
-                # Format current time as "3:25 pm" style
+                # Format current time as "3:15 pm" style
                 def _fmt_now():
                     try:
                         return now_ist.strftime("%-I:%M %p").lower()
@@ -114,7 +114,7 @@ def track_live_trades():
                     else:
                         outcome = "FLAT"
                     exit_price = ltp
-                    exit_time = "3:25 pm"  # Force 3:25 PM for auto-square off
+                    exit_time = "3:15 pm"  # Force 3:15 PM for auto-square off
                     
                 if outcome and exit_price is not None:
                     trade.outcome = outcome
@@ -124,6 +124,29 @@ def track_live_trades():
                         trade.pnl_pct = round((exit_price - entry) / entry * 100, 2)
                         trade.pnl_amount = round(trade.quantity * (exit_price - entry), 2)
                     logger.info(f"Live Track: Locked in {outcome} for {alert.stock} at ₹{exit_price}")
+                    
+                    status = outcome
+                    pnl_pct = trade.pnl_pct
+                    final_ltp = exit_price
+                else:
+                    status = "ACTIVE"
+                    pnl_pct = round(((ltp - entry) / entry) * 100, 2) if entry else 0.0
+                    final_ltp = ltp
+                
+                # Broadcast price update event via SSE
+                from main import _main_event_loop, broadcast_event
+                if _main_event_loop and not _main_event_loop.is_closed():
+                    event_payload = {
+                        "alert_id": alert.id,
+                        "ltp": round(final_ltp, 2),
+                        "floating_pnl_pct": pnl_pct,
+                        "status": status
+                    }
+                    import asyncio
+                    asyncio.run_coroutine_threadsafe(
+                        broadcast_event("price_update", event_payload),
+                        _main_event_loop
+                    )
             except Exception as e:
                 logger.error(f"Error tracking {trade.alert.stock}: {e}")
                 
@@ -356,8 +379,8 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
         logger.warning(f"No candles found for {alert.stock} on {alert.trigger_date}")
         return None
 
-    # Filter to candles from trigger_time up to 15:20 (last bar before 3:25 auto-square-off)
-    square_off_time = time(15, 20)
+    # Filter to candles from trigger_time up to 15:10 (last bar before 3:15 auto-square-off)
+    square_off_time = time(15, 10)
     df["time_only"] = df["timestamp"].dt.time
     post_trigger = df[
         (df["time_only"] >= trigger_time) &
@@ -376,7 +399,7 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
     # as exit (auto-squared immediately — treat as flat/minimal move)
     if len(post_trigger) < 2:
         exit_price = float(entry_candle["close"])
-        exit_time_str = "3:25 pm"
+        exit_time_str = "3:15 pm"
         if exit_price > entry_price:
             outcome = "PROFIT"
         elif exit_price < entry_price:
@@ -421,10 +444,10 @@ def _backtest_single_alert(alert: Alert, db: Session) -> BacktestResult | None:
             break
 
     if outcome is None:
-        # Neither target nor SL was hit → auto-squared off at 3:25 PM.
-        # Exit price = close of last available candle (15:20 bar).
+        # Neither target nor SL was hit → auto-squared off at 3:15 PM.
+        # Exit price = close of last available candle (15:10 bar).
         exit_price    = float(post_trigger.iloc[-1]["close"])
-        exit_time_str = "3:25 pm"
+        exit_time_str = "3:15 pm"
         if exit_price > entry_price:
             outcome = "PROFIT"
         elif exit_price < entry_price:

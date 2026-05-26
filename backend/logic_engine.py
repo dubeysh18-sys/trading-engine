@@ -16,6 +16,8 @@ The 4 Golden Rules (in priority order):
 import logging
 import pandas as pd
 from ta.trend import EMAIndicator
+from cachetools import TTLCache, cached
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +121,22 @@ def get_indicator_snapshot(df: pd.DataFrame) -> dict:
     }
 
 
+# ── NIFTY Status Caching ───────────────────────────────────────────────────────
+_nifty_cache = TTLCache(maxsize=1, ttl=120)  # 120-second (2-minute) cache
+_nifty_lock = threading.Lock()
+
+@cached(cache=_nifty_cache, lock=_nifty_lock)
+def get_nifty_status() -> dict:
+    """Fetches NIFTY 50 LTP and VWAP from Upstox. Result cached for 120 seconds."""
+    from upstox_client import get_ltp, get_historical_data
+    nifty_ltp = get_ltp("NIFTY50")
+    nifty_df = get_historical_data("NIFTY50", days=1)
+    nifty_vwap = None
+    if nifty_df is not None and not nifty_df.empty:
+        nifty_vwap = calculate_vwap(nifty_df).iloc[-1]
+    return {"ltp": nifty_ltp, "vwap": nifty_vwap}
+
+
 # ── The 4 Golden Rules ─────────────────────────────────────────────────────────
 
 def evaluate_rules(
@@ -139,7 +157,13 @@ def evaluate_rules(
         and all indicator values
     """
     indicators = get_indicator_snapshot(stock_df)
-    nifty_indicators = get_indicator_snapshot(nifty_df)
+    
+    is_fallback = False
+    if nifty_df is None:
+        is_fallback = True
+    elif stock_df is not None and len(nifty_df) == len(stock_df):
+        if len(nifty_df) > 0 and nifty_df.iloc[-1]["close"] == stock_df.iloc[-1]["close"] and nifty_df.iloc[-1]["open"] == stock_df.iloc[-1]["open"]:
+            is_fallback = True
 
     if not indicators:
         return {
@@ -164,8 +188,20 @@ def evaluate_rules(
     close_price = indicators["latest_close"]
     open_price = indicators["latest_open"]
 
-    nifty_ltp  = nifty_indicators.get("latest_close")
-    nifty_vwap = nifty_indicators.get("vwap")
+    nifty_ltp = None
+    nifty_vwap = None
+    if not is_fallback:
+        nifty_indicators = get_indicator_snapshot(nifty_df)
+        nifty_ltp  = nifty_indicators.get("latest_close")
+        nifty_vwap = nifty_indicators.get("vwap")
+    
+    if nifty_ltp is None or nifty_vwap is None:
+        try:
+            ns = get_nifty_status()
+            nifty_ltp = ns.get("ltp")
+            nifty_vwap = ns.get("vwap")
+        except Exception as e:
+            logger.error(f"Error fetching cached NIFTY status: {e}")
 
     verdict        = "ENTER"
     verdict_reason = "All 4 rules passed — clear entry signal"
@@ -243,6 +279,7 @@ def evaluate_rules(
         "ema9":           indicators.get("ema9"),
         "pivot_r1":       r1,
         "pivot_r2":       r2,
+        "pivot_r3":       r3,
         "pivot_s1":       indicators.get("pivot_s1"),
         "upper_wick":     upper_wick,
         "solid_body":     solid_body,

@@ -29,7 +29,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from dotenv import load_dotenv
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from database import init_db, get_db, Alert, BacktestResult
 from upstox_client import get_historical_data, get_ltp, resolve_instrument_key
@@ -67,17 +67,23 @@ logging.getLogger().addHandler(_dh)
 IST = pytz.timezone("Asia/Kolkata")
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
-scheduler = BackgroundScheduler(timezone=IST)
+scheduler = AsyncIOScheduler(timezone=IST)
 
 
 def _scheduled_backtest():
     """Triggered at 15:30 IST on market days to clean up any remaining trades."""
     logger.info("Scheduled backtest (EOD square-off) starting at 15:30 IST...")
+    from database import SessionLocal
+    db = SessionLocal()
     try:
         result = run_backtest()
         logger.info(f"Scheduled backtest done: {result}")
+        db.commit()
     except Exception as e:
+        db.rollback()
         logger.error(f"Scheduled backtest failed: {e}")
+    finally:
+        db.close()
 
 def _live_tracker():
     """Triggered every 1 minute during market hours."""
@@ -112,7 +118,7 @@ def _self_keepalive():
 async def lifespan(app: FastAPI):
     global _main_event_loop
     logger.info("Starting Trading Rule Engine...")
-    _main_event_loop = asyncio.get_running_loop()  # capture loop for background threads
+    _main_event_loop = asyncio.get_event_loop()  # capture loop for background threads
     init_db()
     # Schedule EOD backtest at 15:30 IST, Mon-Fri
     scheduler.add_job(
@@ -451,6 +457,7 @@ def _process_alerts(
                     ema9          = _f(result["ema9"]),
                     pivot_r1      = _f(result["pivot_r1"]),
                     pivot_r2      = _f(result["pivot_r2"]),
+                    pivot_r3      = _f(result["pivot_r3"]),
                     pivot_s1      = _f(result["pivot_s1"]),
                     upper_wick    = _f(result["upper_wick"]),
                     solid_body    = _f(result["solid_body"]),
@@ -528,6 +535,9 @@ def _serialize_alert(a: Alert) -> dict:
         "vwap":          a.vwap,
         "ema9":          a.ema9,
         "pivot_r1":      a.pivot_r1,
+        "pivot_r2":      a.pivot_r2,
+        "pivot_r3":      a.pivot_r3,
+        "pivot_s1":      a.pivot_s1,
         "verdict":       a.verdict,
         "verdict_reason":a.verdict_reason,
         "created_at":    a.created_at.isoformat() if a.created_at else None,
@@ -552,78 +562,7 @@ async def alerts_stream():
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-# ── Live Price Tracker ──────────────────────────────────────────────────────────
-@app.get("/api/alerts/live-prices")
-def get_live_prices(date: str = Query(None), db: Session = Depends(get_db)):
-    """
-    For all ENTER alerts on a date, return the current LTP + P&L status.
-    Used by the frontend to show live trade progress bars and P&L.
-    """
-    query_date = date or datetime.now(IST).strftime("%Y-%m-%d")
-    enter_alerts = (
-        db.query(Alert)
-        .filter(Alert.trigger_date == query_date, Alert.verdict == "ENTER")
-        .all()
-    )
 
-    # Pre-fetch LTPs for all active (PENDING) alerts in one batch
-    active_stocks = []
-    for alert in enter_alerts:
-        bt = alert.backtest_result
-        if not (bt and bt.outcome not in ("PENDING", None)):
-            active_stocks.append(alert.stock)
-
-    from upstox_client import get_ltps
-    ltp_map = get_ltps(active_stocks) if active_stocks else {}
-
-    result = []
-    for alert in enter_alerts:
-        ltp = None
-        pnl_pct = None
-        pnl_amount = None
-        status = "PENDING"
-
-        entry = alert.entry_price
-        # Quantity used for position sizing (50k × 4x leverage)
-        quantity = int((50000 * 4) / entry) if entry else 0
-
-        # Check if a finalized backtest result exists
-        bt = alert.backtest_result
-        if bt and bt.outcome not in ("PENDING", None):
-            status     = bt.outcome  # PROFIT | LOSS | FLAT
-            ltp        = bt.exit_price
-            pnl_pct    = bt.pnl_pct
-            pnl_amount = bt.pnl_amount
-        else:
-            # Still active — compute live floating P&L from batch LTP
-            try:
-                ltp = ltp_map.get(alert.stock.upper())
-                if ltp and entry:
-                    pnl_pct    = round((ltp - entry) / entry * 100, 2)
-                    pnl_amount = round(quantity * (ltp - entry), 2)
-                    if alert.target and ltp >= alert.target:
-                        status = "PROFIT"
-                    elif alert.stop_loss and alert.stop_loss < entry and ltp <= alert.stop_loss:
-                        status = "LOSS"
-                    else:
-                        status = "ACTIVE"
-            except Exception as e:
-                logger.warning(f"live-prices: could not process LTP for {alert.stock}: {e}")
-
-        result.append({
-            "stock":       alert.stock,
-            "alert_id":    alert.id,
-            "entry_price": entry,
-            "target":      alert.target,
-            "stop_loss":   alert.stop_loss,
-            "ltp":         ltp,
-            "pnl_pct":     pnl_pct,
-            "pnl_amount":  pnl_amount,
-            "quantity":    quantity,
-            "status":      status,
-        })
-
-    return result
 
 
 # ── NIFTY Status ───────────────────────────────────────────────────────────────

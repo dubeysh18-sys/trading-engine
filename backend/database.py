@@ -80,6 +80,7 @@ class Alert(Base):
     ema9          = Column(Float, nullable=True)
     pivot_r1      = Column(Float, nullable=True)
     pivot_r2      = Column(Float, nullable=True)
+    pivot_r3      = Column(Float, nullable=True)   # Added
     pivot_s1      = Column(Float, nullable=True)
     upper_wick    = Column(Float, nullable=True)
     solid_body    = Column(Float, nullable=True)

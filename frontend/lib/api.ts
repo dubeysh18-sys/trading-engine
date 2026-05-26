@@ -2,7 +2,8 @@
  * lib/api.ts — Typed fetch helpers for all backend endpoints
  */
 
-const API = process.env.NEXT_PUBLIC_API_URL || "https://trading-engine-58hz.onrender.com";
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+export { BASE_URL as API };
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -79,41 +80,30 @@ export interface LivePrice {
 // ── Fetch Helpers ─────────────────────────────────────────────────────────────
 
 export async function fetchAlerts(date?: string): Promise<Alert[]> {
-  const url = date ? `${API}/api/alerts?date=${date}` : `${API}/api/alerts`;
+  const url = date ? `${BASE_URL}/api/alerts?date=${date}` : `${BASE_URL}/api/alerts`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`Alerts fetch failed: ${res.status}`);
   return res.json();
 }
 
 export async function fetchNiftyStatus(): Promise<NiftyStatus> {
-  const res = await fetch(`${API}/api/nifty-status`, { cache: "no-store" });
+  const res = await fetch(`${BASE_URL}/api/nifty-status`, { cache: "no-store" });
   if (!res.ok) throw new Error(`NIFTY status fetch failed: ${res.status}`);
   return res.json();
 }
 
-export async function fetchLivePrices(date?: string): Promise<LivePrice[]> {
-  const url = date
-    ? `${API}/api/alerts/live-prices?date=${date}`
-    : `${API}/api/alerts/live-prices`;
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) return [];
-  return res.json();
-}
-
 export async function fetchBacktestResults(date?: string): Promise<BacktestResults> {
-  const url = date ? `${API}/api/backtest-results?date=${date}` : `${API}/api/backtest-results`;
+  const url = date ? `${BASE_URL}/api/backtest-results?date=${date}` : `${BASE_URL}/api/backtest-results`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`Backtest results fetch failed: ${res.status}`);
   return res.json();
 }
 
 export async function triggerBacktest(): Promise<{ status: string; message: string }> {
-  const res = await fetch(`${API}/api/run-backtest`, {
+  const res = await fetch(`${BASE_URL}/api/run-backtest`, {
     method: "POST",
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`Backtest trigger failed: ${res.status}`);
   return res.json();
 }
-
-export { API };

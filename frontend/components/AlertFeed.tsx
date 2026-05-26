@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { ExternalLink, RefreshCw, Zap, Settings2 } from "lucide-react";
-import { fetchAlerts, fetchLivePrices, API, type Alert, type LivePrice } from "@/lib/api";
+import { fetchAlerts, API, type Alert, type LivePrice } from "@/lib/api";
 import VerdictPill from "./VerdictPill";
 
 /* ── helpers ──────────────────────────────────────────────────────── */
@@ -133,40 +133,16 @@ export default function AlertFeed() {
       setError(e instanceof Error ? e.message : "Failed to load alerts");
     }
 
-    try {
-      const priceData = await fetchLivePrices();
-      const map: Record<number, LivePrice> = {};
-      priceData.forEach((p) => { map[p.alert_id] = p; });
-      setLivePrices(map);
-    } catch (e) {
-      console.warn("Failed to fetch live prices", e);
-    }
-
     setLastFetch(new Date());
     setLoading(false);
   }, []);
 
-  // Use recursive setTimeout to prevent concurrent overlapping fetches
+  // Load alerts once on mount
   useEffect(() => {
-    let timeoutId: ReturnType<typeof setTimeout>;
-    let isMounted = true;
-
-    const poll = async () => {
-      if (!isMounted) return;
-      await refresh();
-      if (isMounted) {
-        timeoutId = setTimeout(poll, 10000);
-      }
-    };
-    poll();
-
-    return () => {
-      isMounted = false;
-      clearTimeout(timeoutId);
-    };
+    refresh();
   }, [refresh]);
 
-  // Real-time SSE for instant webhook alerts
+  // Real-time SSE for instant webhook alerts & live prices
   useEffect(() => {
     const sse = new EventSource(`${API}/api/alerts/stream`);
     
@@ -178,10 +154,27 @@ export default function AlertFeed() {
           if (prev.some(a => a.id === newAlert.id)) return prev;
           return [newAlert, ...prev];
         });
-        // Immediately fetch prices to get the live state of the new alert
         refresh();
       } catch (err) {
         console.error("SSE parse error", err);
+      }
+    });
+
+    sse.addEventListener("price_update", (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setLivePrices((prev) => ({
+          ...prev,
+          [data.alert_id]: {
+            ...prev[data.alert_id],
+            alert_id: data.alert_id,
+            ltp: data.ltp,
+            pnl_pct: data.floating_pnl_pct,
+            status: data.status,
+          }
+        }));
+      } catch (err) {
+        console.error("SSE price_update parse error", err);
       }
     });
 
