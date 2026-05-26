@@ -244,6 +244,31 @@ def health_check():
     """UptimeRobot pings this every 14 min to keep Render awake."""
     return {"status": "ok", "time": datetime.now(IST).isoformat()}
 
+@app.get("/api/test-email")
+def test_email():
+    """Directly tests the SMTP configuration and returns exact errors."""
+    smtp_user  = os.getenv("SMTP_USER", "")
+    smtp_pass  = os.getenv("SMTP_PASSWORD", "")
+    to_email   = os.getenv("NOTIFICATION_EMAIL", "dubeysh18@gmail.com")
+    
+    if not smtp_user or not smtp_pass:
+        return {"success": False, "error": "SMTP_USER or SMTP_PASSWORD is not set in environment."}
+        
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "Test Email from Trading Engine"
+        msg["From"]    = smtp_user
+        msg["To"]      = to_email
+        msg.attach(MIMEText("If you are reading this, your email configuration works!", "plain"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_user, to_email, msg.as_string())
+            
+        return {"success": True, "message": f"Test email sent successfully to {to_email} via {smtp_user}"}
+    except Exception as e:
+        return {"success": False, "error": str(e), "type": type(e).__name__}
+
 
 # ── Debug Log ──────────────────────────────────────────────────────────────────
 @app.get("/api/debug-log")
