@@ -36,6 +36,15 @@ def parse_trigger_time(time_str: str) -> time | None:
 
 def create_pending_trade(alert: Alert, db: Session):
     """Create a PENDING BacktestResult immediately when an ENTER alert fires."""
+    if not alert or not alert.id:
+        logger.error("ERROR: Attempting to create backtest_result for non-existent alert")
+        return None
+        
+    db_alert = db.query(Alert).filter(Alert.id == alert.id).first()
+    if not db_alert:
+        logger.error(f"ERROR: Attempting to create backtest_result for non-existent alert ID {alert.id}")
+        return None
+
     existing = db.query(BacktestResult).filter(BacktestResult.alert_id == alert.id).first()
     if existing: return
     
@@ -235,12 +244,13 @@ def monitor_wait_pullbacks():
     finally:
         db.close()
 
-def run_backtest(date_str: str | None = None) -> dict:
+def run_backtest(date_str: str | None = None, db: Session | None = None) -> dict:
     """
     Run backtest for all ENTER alerts on a given date.
 
     Args:
         date_str: 'YYYY-MM-DD'. Defaults to today.
+        db: Optional database session. If not provided, a new one is created.
 
     Returns:
         Summary dict with total, wins, losses, flats, win_rate, net_pnl.
@@ -249,7 +259,10 @@ def run_backtest(date_str: str | None = None) -> dict:
         date_str = datetime.now().strftime("%Y-%m-%d")
 
     logger.info(f"Starting backtest for date: {date_str}")
-    db: Session = SessionLocal()
+    is_local_db = False
+    if db is None:
+        db = SessionLocal()
+        is_local_db = True
     
     # Resolve any stale pending trades from past dates
     try:
@@ -318,7 +331,8 @@ def run_backtest(date_str: str | None = None) -> dict:
         db.rollback()
         results["errors"].append(str(e))
     finally:
-        db.close()
+        if is_local_db:
+            db.close()
 
     logger.info(f"Backtest complete: {results}")
     return results

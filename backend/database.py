@@ -100,7 +100,7 @@ class BacktestResult(Base):
     __tablename__ = "backtest_results"
 
     id          = Column(Integer, primary_key=True, index=True)
-    alert_id    = Column(Integer, ForeignKey("alerts.id"), unique=True, nullable=False)
+    alert_id    = Column(Integer, ForeignKey("alerts.id", ondelete="CASCADE"), unique=True, nullable=False)
 
     entry_time  = Column(String(20),  nullable=True)
     entry_price = Column(Float,       nullable=True)

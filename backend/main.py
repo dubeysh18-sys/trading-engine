@@ -15,7 +15,7 @@ import os
 import pytz
 import smtplib
 import threading
-from datetime import datetime
+from datetime import datetime, date
 from contextlib import asynccontextmanager
 from collections import deque
 from email.mime.text import MIMEText
@@ -116,18 +116,26 @@ def _self_keepalive():
 from sqlalchemy import text, inspect as sa_inspect
 
 def run_startup_migrations(engine):
-    """Safely adds any missing columns without breaking existing data."""
+    """Safely adds any missing columns and constraint configurations without breaking existing data."""
     inspector = sa_inspect(engine)
     try:
         existing_columns = [col["name"] for col in inspector.get_columns("alerts")]
         
         with engine.connect() as conn:
+            # 1. Add pivot_r3 column to alerts table if missing
             if "pivot_r3" not in existing_columns:
                 conn.execute(text("ALTER TABLE alerts ADD COLUMN pivot_r3 REAL"))
                 conn.commit()
                 logger.info("[Migration] Added pivot_r3 column to alerts table.")
             else:
                 logger.info("[Migration] pivot_r3 already exists. Skipping.")
+                
+            # 2. Add ON DELETE CASCADE foreign key constraint to backtest_results in production Postgres
+            if not engine.url.drivername.startswith("sqlite"):
+                conn.execute(text("ALTER TABLE backtest_results DROP CONSTRAINT IF EXISTS backtest_results_alert_id_fkey"))
+                conn.execute(text("ALTER TABLE backtest_results ADD CONSTRAINT backtest_results_alert_id_fkey FOREIGN KEY (alert_id) REFERENCES alerts(id) ON DELETE CASCADE"))
+                conn.commit()
+                logger.info("[Migration] Successfully configured ON DELETE CASCADE foreign key on backtest_results table.")
     except Exception as e:
         logger.error(f"[Migration] Startup migration check failed: {e}")
 
@@ -437,7 +445,9 @@ def _process_alerts(
                     result   = evaluate_rules(
                         stock_df=stock_df,
                         nifty_df=nifty_df if nifty_df is not None else stock_df,
-                        trigger_price=trigger_price
+                        trigger_price=trigger_price,
+                        trigger_time=trigger_time,
+                        trigger_date=trigger_date
                     )
                 except Exception as fetch_err:
                     # ── Fault-tolerant fallback ──────────────────────────────
@@ -488,11 +498,20 @@ def _process_alerts(
                 )
                 db.add(alert)
 
-                # If ENTER, immediately create a PENDING backtest result for live tracking
+                # Explicitly populate entry/stop loss/target from rule evaluation (Bug #1 Fix)
+                alert.entry_price = _f(result["entry"])
+                alert.stop_loss = _f(result["stop_loss"])
+                alert.target = _f(result["target"])
+
+                # If ENTER, immediately create a PENDING backtest result for live tracking (Bug #3 Check)
                 if alert.verdict == "ENTER":
                     db.flush()  # get alert id
-                    from backtest import create_pending_trade
-                    create_pending_trade(alert, db)
+                    db_alert = db.query(Alert).filter(Alert.id == alert.id).first()
+                    if not db_alert:
+                        logger.error(f"ERROR: Attempting to create backtest_result for non-existent alert {alert.id}")
+                    else:
+                        from backtest import create_pending_trade
+                        create_pending_trade(db_alert, db)
 
                 db.commit()
                 logger.info(f"  ✓ Saved {stock}: {result['verdict']} | {result['verdict_reason']}")
@@ -628,14 +647,14 @@ def nifty_status(db: Session = Depends(get_db)):
 
 # ── Backtest ───────────────────────────────────────────────────────────────────
 @app.post("/api/run-backtest")
-async def trigger_backtest(
+async def run_backtest_endpoint(
     background_tasks: BackgroundTasks,
-    target_date: str = Query(None)
+    target_date: str = Query(default=str(date.today())),
+    db: Session = Depends(get_db)
 ):
     """Manual trigger for EOD backtest. Runs in background."""
-    date_str = target_date or datetime.now(IST).strftime("%Y-%m-%d")
-    background_tasks.add_task(run_backtest, date_str)
-    return {"status": "started", "date": date_str, "message": f"Backtest running in background for {date_str}. Refresh results in ~30 seconds."}
+    background_tasks.add_task(run_backtest, target_date, db)
+    return {"status": "started", "date": target_date, "message": f"Backtest running in background for {target_date}. Refresh results in ~30 seconds."}
 
 
 def format_time_str(time_str: str | None) -> str:

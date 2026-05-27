@@ -63,7 +63,9 @@ def calculate_pivot_points(prev_day_df: pd.DataFrame) -> dict:
     return {"pivot": pivot, "r1": r1, "r2": r2, "r3": r3, "s1": s1, "s2": s2, "yesterday_high": high}
 
 
-def get_indicator_snapshot(df: pd.DataFrame) -> dict:
+from datetime import datetime
+
+def get_indicator_snapshot(df: pd.DataFrame, target_dt: datetime | None = None) -> dict:
     """
     Calculate all indicators needed for rule evaluation.
 
@@ -77,6 +79,12 @@ def get_indicator_snapshot(df: pd.DataFrame) -> dict:
         return {}
 
     df = df.copy().reset_index(drop=True)
+
+    # Filter out future candles up to target_dt to avoid future data leak
+    if target_dt is not None:
+        df = df[df["timestamp"] <= target_dt].reset_index(drop=True)
+        if df.empty or len(df) < 10:
+            return {}
 
     # ── VWAP ──────────────────────────────────────────────────
     df["vwap"] = calculate_vwap(df)
@@ -142,7 +150,9 @@ def get_nifty_status() -> dict:
 def evaluate_rules(
     stock_df: pd.DataFrame,
     nifty_df: pd.DataFrame,
-    trigger_price: float | None = None
+    trigger_price: float | None = None,
+    trigger_time: str | None = None,
+    trigger_date: str | None = None
 ) -> dict:
     """
     Apply the 4 Golden Rules in priority order.
@@ -151,12 +161,31 @@ def evaluate_rules(
         stock_df:      5-min OHLCV DataFrame for the stock (last 3 days)
         nifty_df:      5-min OHLCV DataFrame for NIFTY 50 (last 3 days)
         trigger_price: Price from Chartink alert (used as "current price")
+        trigger_time:  Webhook trigger time (e.g. "2:50 pm")
+        trigger_date:  Webhook trigger date (e.g. "2026-05-26")
 
     Returns dict with:
         verdict, verdict_reason, entry, target, stop_loss,
         and all indicator values
     """
-    indicators = get_indicator_snapshot(stock_df)
+    target_dt = None
+    if trigger_date and trigger_time:
+        time_str = trigger_time.strip().lower()
+        parsed_time = None
+        for fmt in ("%I:%M %p", "%I:%M%p", "%H:%M:%S", "%H:%M"):
+            try:
+                parsed_time = datetime.strptime(time_str, fmt).time()
+                break
+            except ValueError:
+                continue
+        if parsed_time:
+            try:
+                dt_date = datetime.strptime(trigger_date, "%Y-%m-%d").date()
+                target_dt = datetime.combine(dt_date, parsed_time)
+            except Exception:
+                pass
+
+    indicators = get_indicator_snapshot(stock_df, target_dt)
     
     is_fallback = False
     if nifty_df is None:
@@ -191,7 +220,7 @@ def evaluate_rules(
     nifty_ltp = None
     nifty_vwap = None
     if not is_fallback:
-        nifty_indicators = get_indicator_snapshot(nifty_df)
+        nifty_indicators = get_indicator_snapshot(nifty_df, target_dt)
         nifty_ltp  = nifty_indicators.get("latest_close")
         nifty_vwap = nifty_indicators.get("vwap")
     
@@ -240,18 +269,22 @@ def evaluate_rules(
         verdict_reason = "Not a solid green close"
 
     # ── Trade Parameters (only on ENTER) ──────────────────────
-    entry     = round(current_price, 2) if verdict == "ENTER" else None
+    entry = None
+    if verdict == "ENTER":
+        latest_open = indicators.get("latest_open")
+        entry = round(latest_open, 2) if latest_open is not None else round(current_price, 2)
+
     stop_loss = None
     target    = None
 
     if verdict == "ENTER":
         # Target: Next closest ceiling above entry
-        higher_ceilings = [c for c in ceilings if c > current_price]
+        higher_ceilings = [c for c in ceilings if c > entry]
         if higher_ceilings:
             target = round(min(higher_ceilings), 2)
         else:
             # If breaking out above all known ceilings, target +1.5%
-            target = round(current_price * 1.015, 2)
+            target = round(entry * 1.015, 2)
 
         # Stop Loss: min(VWAP, candle low) — the lower of the two gives the
         # tightest meaningful floor. If price breaks below VWAP or the trigger
@@ -261,8 +294,12 @@ def evaluate_rules(
         if possible_sls:
             stop_loss = round(min(possible_sls), 2)
         else:
-            stop_loss = round(current_price * 0.99, 2) # fallback 1%
-            
+            stop_loss = round(entry * 0.99, 2) # fallback 1%
+
+        # Stop loss safety check: SL shouldn't be more than 2% below entry
+        if stop_loss is None or stop_loss < entry * 0.98:
+            stop_loss = round(entry * 0.99, 2) # fallback to 1% below entry
+
         # CRITICAL BUG FIX: Ensure stop loss is strictly BELOW the entry price.
         # If Chartink webhook is delayed and the stock has already run up, 
         # the 5-min candle low might be > the entry price, causing SL > Entry.
