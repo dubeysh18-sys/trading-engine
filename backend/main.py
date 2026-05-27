@@ -78,14 +78,31 @@ async def state_broadcast_loop():
             logger.error(f"Error in state broadcast loop: {e}")
         await asyncio.sleep(1)
 
+async def nifty_refresh_loop():
+    """Periodically refreshes NIFTY status in the background."""
+    logger.info("Starting background NIFTY status refresh loop...")
+    while True:
+        try:
+            await get_nifty_status()
+        except Exception as e:
+            logger.error(f"Error in NIFTY refresh loop: {e}")
+        
+        # If the cache is still empty, retry quickly (every 10s); otherwise refresh every 60s
+        if nifty_cache is None:
+            await asyncio.sleep(10)
+        else:
+            await asyncio.sleep(60)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start background task to broadcast live updates
+    # Start background tasks
     broadcast_task = asyncio.create_task(state_broadcast_loop())
-    logger.info("App startup: Started background WebSocket state broadcaster.")
+    nifty_task = asyncio.create_task(nifty_refresh_loop())
+    logger.info("App startup: Started background WebSocket broadcaster and NIFTY refresher.")
     yield
     broadcast_task.cancel()
-    logger.info("App shutdown: Stopped background WebSocket state broadcaster.")
+    nifty_task.cancel()
+    logger.info("App shutdown: Stopped background tasks.")
 
 # ============ FASTAPI APP ============
 app = FastAPI(
