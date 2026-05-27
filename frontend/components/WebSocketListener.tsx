@@ -45,6 +45,9 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
           if (data.type === "state") {
             setActiveTrades(data.active_trades || {});
             setExitResults(data.exit_results || []);
+            if (data.alerts_history) {
+              setAlerts(data.alerts_history);
+            }
             if (data.nifty_status) {
               setNiftyStatus(data.nifty_status);
             }

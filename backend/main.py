@@ -25,11 +25,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+import os
+
 # ============ GLOBAL IN-MEMORY STATE ============
 active_trades = {}      # {"BHARTIARTL": {entry_price, target, stop_loss, entered_at, status, ltp, pnl_pct}, ...}
 exit_results = []       # [{"stock": "...", "pct": 0.48, "hit": "TARGET", "exit_price": ..., "exit_time": ...}, ...]
+alerts_history = []     # [{"stock": "...", "trigger_price": ..., "verdict": ..., "reason": ...}, ...]
 nifty_cache = None
 nifty_cache_time = None
+
+STATE_FILE = "state.json"
+
+def save_state():
+    try:
+        state = {
+            "active_trades": active_trades,
+            "exit_results": exit_results,
+            "alerts_history": alerts_history
+        }
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f, default=str)
+    except Exception as e:
+        logger.error(f"Failed to save state: {e}")
+
+def load_state():
+    global active_trades, exit_results, alerts_history
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, "r") as f:
+                state = json.load(f)
+                active_trades = state.get("active_trades", {})
+                exit_results = state.get("exit_results", [])
+                alerts_history = state.get("alerts_history", [])
+            logger.info(f"Loaded state: {len(active_trades)} active trades, {len(exit_results)} exits, {len(alerts_history)} alerts.")
+    except Exception as e:
+        logger.error(f"Failed to load state: {e}")
 
 # ============ WEBSOCKET MANAGER ============
 class ConnectionManager:
@@ -45,7 +75,8 @@ class ConnectionManager:
             await websocket.send_json({
                 "type": "state",
                 "active_trades": active_trades,
-                "exit_results": exit_results
+                "exit_results": exit_results,
+                "alerts_history": alerts_history
             })
         except Exception:
             pass
@@ -72,7 +103,8 @@ async def state_broadcast_loop():
                 "type": "state",
                 "active_trades": active_trades,
                 "exit_results": exit_results,
-                "nifty_status": nifty_cache
+                "nifty_status": nifty_cache,
+                "alerts_history": alerts_history
             })
         except Exception as e:
             logger.error(f"Error in state broadcast loop: {e}")
@@ -95,6 +127,19 @@ async def nifty_refresh_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Load state from file
+    load_state()
+
+    # Restore active trade monitoring tasks
+    for symbol, trade in list(active_trades.items()):
+        try:
+            target = float(trade["target"])
+            sl = float(trade["stop_loss"])
+            asyncio.create_task(monitor_trade(symbol, target, sl))
+            logger.info(f"Restored active trade monitor task for {symbol} | Target: {target} | SL: {sl}")
+        except Exception as e:
+            logger.error(f"Failed to restore active trade monitor task for {symbol}: {e}")
+
     # Start background tasks
     broadcast_task = asyncio.create_task(state_broadcast_loop())
     nifty_task = asyncio.create_task(nifty_refresh_loop())
@@ -221,6 +266,12 @@ async def evaluate_stock(stock_symbol: str, trigger_price: float, timestamp_str:
             "reason": reason
         }
         
+        # Save to alerts_history
+        alerts_history.insert(0, alert_data)
+        if len(alerts_history) > 100:
+            alerts_history.pop()
+        save_state()
+
         # Broadcast alert immediately
         broadcast_alert(alert_data)
         logger.info(f"Verdict for {stock_symbol}: {verdict} | Reason: {reason}")
@@ -258,6 +309,7 @@ async def evaluate_stock(stock_symbol: str, trigger_price: float, timestamp_str:
             }
             
             active_trades[stock_symbol] = trade_data
+            save_state()
             
             # Start monitoring in background
             asyncio.create_task(monitor_trade(stock_symbol, target, sl))
@@ -296,6 +348,7 @@ async def monitor_trade(stock_symbol: str, target: float, stop_loss: float):
                 })
                 logger.info(f"Target hit for {stock_symbol} at {current_price:.2f}. Trade closed.")
                 del active_trades[stock_symbol]
+                save_state()
                 break
                 
             # Check stop loss hit
@@ -310,6 +363,7 @@ async def monitor_trade(stock_symbol: str, target: float, stop_loss: float):
                 })
                 logger.info(f"Stop Loss hit for {stock_symbol} at {current_price:.2f}. Trade closed.")
                 del active_trades[stock_symbol]
+                save_state()
                 break
                 
             await asyncio.sleep(10)
