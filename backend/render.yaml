@@ -1,8 +1,3 @@
-databases:
-  - name: trading-db
-    databaseName: trading_engine
-    plan: free
-
 services:
   - type: web
     name: trading-engine-backend
@@ -12,13 +7,9 @@ services:
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: UPSTOX_ACCESS_TOKEN
-        sync: false          # Set manually in Render dashboard → Environment
+        sync: false          # Set manually in Render dashboard
       - key: CORS_ORIGINS
-        sync: false          # e.g. https://playful-snickerdoodle-29868c.netlify.app
-      - key: DATABASE_URL
-        fromDatabase:
-          name: trading-db
-          property: connectionString   # Render injects the live PostgreSQL URL here
+        sync: false          # e.g. https://your-netlify-app.netlify.app
       - key: APP_ENV
         value: production
       - key: RENDER_EXTERNAL_URL

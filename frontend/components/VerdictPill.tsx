@@ -2,7 +2,7 @@
 
 import { Alert } from "@/lib/api";
 
-type VerdictType = Alert["verdict"];
+type VerdictType = Alert["verdict"] | "PENDING";
 
 interface Props {
   verdict: VerdictType;

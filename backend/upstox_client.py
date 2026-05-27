@@ -1,14 +1,15 @@
 """
-upstox_client.py — Upstox API V2/V3 wrapper
+upstox_client.py — Upstox API Wrapper (Refactored)
 
 Uses the long-lived access token stored in UPSTOX_ACCESS_TOKEN env var.
-No OAuth dance needed — token is valid for ~1 year.
+Exposes both synchronous methods and async wrappers for FastAPI integration.
 """
 
 import os
 import json
 import logging
 import requests
+import asyncio
 import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -23,21 +24,31 @@ UPSTOX_BASE_V2 = "https://api.upstox.com/v2"
 UPSTOX_BASE_V3 = "https://api.upstox.com/v3"
 NIFTY_KEY = "NSE_INDEX|Nifty 50"
 
-# Instrument master (cached on first call)
-_instrument_cache: dict[str, str] = {}  # symbol -> instrument_key
-_INSTRUMENT_CACHE_FILE = Path(__file__).parent / "instrument_cache.json"
+# Instrument keys JSON file mapping
+_INSTRUMENT_KEYS_FILE = Path(__file__).parent / "instrument_keys.json"
+_instrument_keys: dict[str, str] = {}
 
+def load_instrument_keys():
+    global _instrument_keys
+    if _INSTRUMENT_KEYS_FILE.exists():
+        try:
+            with open(_INSTRUMENT_KEYS_FILE, "r") as f:
+                _instrument_keys = json.load(f)
+            logger.info(f"Loaded {len(_instrument_keys)} instrument keys from {_INSTRUMENT_KEYS_FILE.name}.")
+        except Exception as e:
+            logger.error(f"Error loading instrument keys: {e}")
+    else:
+        logger.warning(f"instrument_keys.json not found at {_INSTRUMENT_KEYS_FILE.absolute()}")
+
+# Load mapping on module import
+load_instrument_keys()
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
 def _get_token() -> str:
     token = os.getenv("UPSTOX_ACCESS_TOKEN", "")
     if not token:
-        raise ValueError(
-            "UPSTOX_ACCESS_TOKEN is not set. "
-            "Copy .env.template to .env and paste your token."
-        )
+        raise ValueError("UPSTOX_ACCESS_TOKEN is not set.")
     return token
-
 
 def _headers() -> dict:
     return {
@@ -45,97 +56,22 @@ def _headers() -> dict:
         "Accept": "application/json",
     }
 
-
-# ── Instrument Key Resolution ──────────────────────────────────────────────────
-def _load_instrument_cache():
-    """Load cached symbol→key mapping from disk."""
-    global _instrument_cache
-    if _INSTRUMENT_CACHE_FILE.exists():
-        with open(_INSTRUMENT_CACHE_FILE, "r") as f:
-            _instrument_cache = json.load(f)
-        logger.info(f"Loaded {len(_instrument_cache)} cached instrument keys.")
-
-
-def _save_instrument_cache():
-    with open(_INSTRUMENT_CACHE_FILE, "w") as f:
-        json.dump(_instrument_cache, f)
-
-
-def _fetch_instrument_master():
-    """
-    Download Upstox NSE_EQ instrument master (gzip JSON) and build a
-    trading_symbol → instrument_key lookup dictionary.
-    The master is ~3MB gzip so we cache it to disk.
-    """
-    global _instrument_cache
-    logger.info("Downloading Upstox NSE_EQ instrument master (gzip)...")
-    url = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-
-    # Decompress gzip manually — the server may not set Content-Encoding
-    import gzip, io
-    raw = resp.content
-    try:
-        decompressed = gzip.decompress(raw)
-    except Exception:
-        # Already plain JSON (shouldn't happen, but handle gracefully)
-        decompressed = raw
-
-    instruments = json.loads(decompressed.decode("utf-8"))
-    new_cache = {}
-    for instr in instruments:
-        symbol  = instr.get("trading_symbol", "")
-        key     = instr.get("instrument_key", "")
-        itype   = instr.get("instrument_type", "")
-        segment = instr.get("segment", "")
-        # Only equity cash segment
-        if segment == "NSE_EQ" and itype == "EQ" and symbol and key:
-            new_cache[symbol.upper()] = key
-
-    _instrument_cache = new_cache
-    _save_instrument_cache()
-    logger.info(f"Instrument master loaded: {len(_instrument_cache)} equity symbols.")
-
-
-def resolve_instrument_key(symbol: str) -> str:
-    """
-    Convert a plain NSE trading symbol (e.g. 'TCS', 'RELIANCE') to
-    an Upstox instrument_key (e.g. 'NSE_EQ|INE040A01034').
-    """
+def get_instrument_key(symbol: str) -> str:
+    """Look up instrument_key from JSON mapping."""
     symbol = symbol.upper().strip()
-
-    # Load cache if empty
-    if not _instrument_cache:
-        _load_instrument_cache()
-
-    # If still empty (first run), fetch the master
-    if not _instrument_cache:
-        _fetch_instrument_master()
-
-    if symbol not in _instrument_cache:
-        # Try refreshing master in case it's a new listing
-        _fetch_instrument_master()
-
-    key = _instrument_cache.get(symbol)
+    if symbol in ("NIFTY50", "NIFTY", "NIFTY 50"):
+        return NIFTY_KEY
+    key = _instrument_keys.get(symbol)
     if not key:
-        raise ValueError(f"Could not resolve instrument key for symbol: {symbol}")
+        logger.warning(f"Could not resolve key for symbol: {symbol}. Fallback to generic.")
+        # Fallback format if cache doesn't have it, though usually it should
+        return f"NSE_EQ|{symbol}"
     return key
-
 
 # ── Historical Data ────────────────────────────────────────────────────────────
 def get_historical_data(symbol: str, days: int = 3, end_date_str: str | None = None) -> pd.DataFrame:
-    """
-    Fetch the last `days` of 5-minute OHLCV candles from Upstox V3.
-
-    Returns a DataFrame with columns:
-        timestamp, open, high, low, close, volume
-    Sorted by timestamp ascending.
-    """
-    if symbol.upper() == "NIFTY50" or symbol.upper() == "NIFTY":
-        instrument_key = NIFTY_KEY
-    else:
-        instrument_key = resolve_instrument_key(symbol)
+    """Fetch the last `days` of 5-minute OHLCV candles from Upstox V3."""
+    instrument_key = get_instrument_key(symbol)
 
     if end_date_str:
         to_date_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
@@ -144,7 +80,6 @@ def get_historical_data(symbol: str, days: int = 3, end_date_str: str | None = N
 
     to_date   = to_date_dt.strftime("%Y-%m-%d")
     from_date = (to_date_dt - timedelta(days=days + 2)).strftime("%Y-%m-%d")
-    # +2 to account for weekends
 
     url = (
         f"{UPSTOX_BASE_V3}/historical-candle"
@@ -155,35 +90,21 @@ def get_historical_data(symbol: str, days: int = 3, end_date_str: str | None = N
     resp = requests.get(url, headers=_headers(), timeout=15)
     resp.raise_for_status()
 
-    # Guard against empty or non-JSON response body
-    raw_text = resp.text.strip()
-    if not raw_text:
-        logger.error(f"Upstox returned empty body for {symbol} — instrument key may be wrong: {instrument_key}")
-        raise ValueError(f"Empty response from Upstox for {symbol}. Check instrument key.")
-
-    try:
-        data = resp.json()
-    except Exception as json_err:
-        logger.error(f"Upstox JSON parse failed for {symbol}: {json_err} | body: {raw_text[:200]}")
-        raise ValueError(f"Invalid JSON from Upstox for {symbol}: {json_err}")
-
+    data = resp.json()
     candles = data.get("data", {}).get("candles", [])
 
     if not candles:
-        logger.warning(f"No historical candles returned for {symbol} (key={instrument_key})")
         return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
 
     df = pd.DataFrame(
         candles,
         columns=["timestamp", "open", "high", "low", "close", "volume", "oi"]
     )
-    # Parse timestamps — Upstox returns ISO8601 with timezone offset (+05:30)
-    # Convert to IST (Asia/Kolkata) and then strip tz-info to use naive datetimes in IST
+    # Parse timestamps to naive IST
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
     df = df[["timestamp", "open", "high", "low", "close", "volume"]]
     df = df.sort_values("timestamp").reset_index(drop=True)
 
-    # Keep only last `days` trading days (naive cutoff, matches stripped timestamps)
     cutoff = (to_date_dt - timedelta(days=days + 1)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
@@ -191,18 +112,11 @@ def get_historical_data(symbol: str, days: int = 3, end_date_str: str | None = N
 
     return df
 
-
 # ── Live LTP ──────────────────────────────────────────────────────────────────
 def get_ltp(symbol: str) -> float | None:
-    """
-    Fetch the Last Traded Price for a symbol.
-    Returns float price or None on error.
-    """
+    """Fetch the Last Traded Price for a symbol."""
     try:
-        if symbol.upper() in ("NIFTY50", "NIFTY", "NIFTY 50"):
-            instrument_key = NIFTY_KEY
-        else:
-            instrument_key = resolve_instrument_key(symbol)
+        instrument_key = get_instrument_key(symbol)
 
         url = f"{UPSTOX_BASE_V2}/market-quote/ltp"
         params = {"symbol": instrument_key}
@@ -211,7 +125,6 @@ def get_ltp(symbol: str) -> float | None:
 
         data = resp.json()
         quotes = data.get("data", {})
-        # Key format varies — try both formats
         for key in quotes:
             ltp = quotes[key].get("last_price")
             if ltp is not None:
@@ -220,64 +133,28 @@ def get_ltp(symbol: str) -> float | None:
         logger.error(f"get_ltp({symbol}) failed: {e}")
     return None
 
-
-def get_ltps(symbols: list[str]) -> dict[str, float]:
-    """
-    Fetch LTP for a list of symbols in a single Upstox API request.
-    Returns a dict mapping stock_symbol -> ltp (float).
-    """
-    if not symbols:
-        return {}
-    
-    # Resolve all instrument keys and map key -> stock_symbol
-    key_to_symbol = {}
-    keys = []
-    for s in symbols:
-        try:
-            if s.upper() in ("NIFTY50", "NIFTY", "NIFTY 50"):
-                key = NIFTY_KEY
-            else:
-                key = resolve_instrument_key(s)
-            keys.append(key)
-            key_to_symbol[key] = s.upper()
-        except Exception as e:
-            logger.error(f"Error resolving key for {s}: {e}")
-            
-    if not keys:
-        return {}
-        
+# ── Async Wrappers ─────────────────────────────────────────────────────────────
+async def upstox_get_candles(stock_symbol: str) -> list[dict]:
+    """Fetch 5-min candles from Upstox (Async)."""
     try:
-        # Join keys with commas (up to 100 symbols is supported by Upstox in one call)
-        url = f"{UPSTOX_BASE_V2}/market-quote/ltp"
-        params = {"symbol": ",".join(keys)}
-        resp = requests.get(url, headers=_headers(), params=params, timeout=10)
-        resp.raise_for_status()
+        loop = asyncio.get_running_loop()
+        df = await loop.run_in_executor(None, get_historical_data, stock_symbol, 3)
+        if df.empty:
+            return []
         
-        data = resp.json()
-        quotes = data.get("data", {})
-        
-        result = {}
-        for key, val in quotes.items():
-            ltp = val.get("last_price")
-            if ltp is not None:
-                stock_sym = key_to_symbol.get(key)
-                if stock_sym:
-                    result[stock_sym] = float(ltp)
-        return result
+        # Convert timestamp to naive datetime objects
+        df["timestamp"] = df["timestamp"].dt.to_pydatetime()
+        return df.to_dict("records")
     except Exception as e:
-        logger.error(f"get_ltps({symbols}) failed: {e}")
-        return {}
+        logger.error(f"upstox_get_candles for {stock_symbol} failed: {e}")
+        return []
 
-
-# ── Nifty Status ──────────────────────────────────────────────────────────────
-def get_nifty_status(nifty_vwap: float) -> dict:
-    """Return NIFTY LTP and whether market wind is bullish."""
-    ltp = get_ltp("NIFTY50")
-    if ltp is None:
-        return {"ltp": None, "vwap": nifty_vwap, "is_bullish": None, "error": "LTP fetch failed"}
-    return {
-        "ltp": ltp,
-        "vwap": nifty_vwap,
-        "is_bullish": ltp >= nifty_vwap,
-        "error": None,
-    }
+async def upstox_get_ltp(stock_symbol: str) -> float | None:
+    """Fetch live LTP from Upstox (Async)."""
+    try:
+        loop = asyncio.get_running_loop()
+        ltp = await loop.run_in_executor(None, get_ltp, stock_symbol)
+        return ltp
+    except Exception as e:
+        logger.error(f"upstox_get_ltp for {stock_symbol} failed: {e}")
+        return None

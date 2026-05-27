@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { Activity, RefreshCw, TrendingUp, TrendingDown } from "lucide-react";
-import { fetchNiftyStatus, type NiftyStatus } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { Activity, TrendingUp, TrendingDown } from "lucide-react";
+import { useWebSocket } from "./WebSocketListener";
 
 function useISTClock() {
   const [time, setTime] = useState("");
@@ -41,44 +41,14 @@ function useISTDate() {
   return date;
 }
 
-export default function Header({
-  selectedDate,
-  setSelectedDate,
-}: {
-  selectedDate: string;
-  setSelectedDate: (d: string) => void;
-}) {
+export default function Header() {
   const time = useISTClock();
   const date = useISTDate();
-  const [nifty, setNifty] = useState<NiftyStatus | null>(null);
-  const [lastRefresh, setLastRefresh] = useState("");
+  const { niftyStatus } = useWebSocket();
 
-  const refreshNifty = useCallback(async () => {
-    try {
-      const data = await fetchNiftyStatus();
-      setNifty(data);
-      setLastRefresh(
-        new Date().toLocaleTimeString("en-IN", {
-          timeZone: "Asia/Kolkata",
-          hour: "2-digit",
-          minute: "2-digit",
-          hour12: true,
-        })
-      );
-    } catch {
-      // silently fail — keep last known state
-    }
-  }, []);
-
-  useEffect(() => {
-    refreshNifty();
-    const id = setInterval(refreshNifty, 300_000); // every 5 mins
-    return () => clearInterval(id);
-  }, [refreshNifty]);
-
-  const isBullish = nifty?.is_bullish;
-  const niftyLtp  = nifty?.ltp;
-  const niftyVwap = nifty?.vwap;
+  const isBullish = niftyStatus?.is_bullish;
+  const niftyLtp  = niftyStatus?.ltp;
+  const niftyVwap = niftyStatus?.vwap;
 
   return (
     <header
@@ -123,7 +93,7 @@ export default function Header({
             Trading Rule Engine
           </div>
           <div style={{ fontSize: 11, color: "#4b5563", letterSpacing: "0.06em" }}>
-            INTRADAY SCANNER + EOD BACKTESTER
+            SIMPLIFIED REAL-TIME SCANNER
           </div>
         </div>
       </div>
@@ -196,7 +166,7 @@ export default function Header({
               </>
             ) : (
               <span style={{ color: "#4b5563", fontSize: 13 }}>
-                {nifty?.error ? "API Error" : "Loading..."}
+                Loading NIFTY...
               </span>
             )}
           </div>
@@ -224,34 +194,8 @@ export default function Header({
         )}
       </div>
 
-      {/* ── Right: Clock & Date Picker ────────────────────────────── */}
+      {/* ── Right: Clock & IST Info ────────────────────────────── */}
       <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-        
-        {/* Date Picker */}
-        <div style={{ marginRight: 8 }}>
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            style={{
-              background: "#0a0e17",
-              color: "#e2e8f0",
-              border: "1px solid #1e2d45",
-              borderRadius: "6px",
-              padding: "4px 8px",
-              fontSize: "12px",
-              fontFamily: "JetBrains Mono, monospace",
-              outline: "none",
-            }}
-          />
-        </div>
-
-        {lastRefresh && (
-          <div style={{ display: "flex", alignItems: "center", gap: 5, color: "#4b5563", fontSize: 11 }}>
-            <RefreshCw size={10} />
-            {lastRefresh}
-          </div>
-        )}
         <div style={{ textAlign: "right" }}>
           <div
             style={{
