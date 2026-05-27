@@ -44,13 +44,31 @@ class ConnectionManager:
         logger.info(f"WebSocket client connected. Total active: {len(self.active_connections)}")
         # Send initial state immediately
         try:
+            db = SessionLocal()
+            try:
+                today_str = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%Y-%m-%d")
+                alerts = db.query(Alert).filter(Alert.trigger_date == today_str).order_by(Alert.id.desc()).all()
+                alerts_history = [{
+                    "stock": a.stock,
+                    "trigger_price": a.trigger_price,
+                    "trigger_time": a.trigger_time,
+                    "verdict": a.verdict,
+                    "reason": a.verdict_reason,
+                    "entry_price": a.entry_price,
+                    "target": a.target,
+                    "stop_loss": a.stop_loss
+                } for a in alerts]
+            finally:
+                db.close()
+
             await websocket.send_json({
                 "type": "state",
                 "active_trades": active_trades,
-                "exit_results": exit_results
+                "exit_results": exit_results,
+                "alerts_history": alerts_history
             })
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error sending initial state: {e}")
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
@@ -102,8 +120,31 @@ async def lifespan(app: FastAPI):
 
     db = SessionLocal()
     try:
-        # 1. Restore active trades from DB (where outcome is PENDING)
-        pending_exits = db.query(BacktestResult).filter(BacktestResult.outcome == "PENDING").all()
+        today_str = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%Y-%m-%d")
+
+        # 1. Clean up/square off older pending trades from previous days
+        older_pending = db.query(BacktestResult).join(Alert).filter(
+            BacktestResult.outcome == "PENDING",
+            Alert.trigger_date < today_str
+        ).all()
+        if older_pending:
+            logger.info(f"Found {len(older_pending)} stale pending trades from previous days. Auto-squaring off...")
+            for op in older_pending:
+                alert = op.alert
+                exit_p = alert.stop_loss if alert.stop_loss is not None else alert.entry_price
+                op.exit_price = exit_p
+                op.exit_time = "03:15 pm"
+                op.outcome = "LOSS" if (alert.stop_loss is not None and alert.stop_loss < alert.entry_price) else "FLAT"
+                entry_val = alert.entry_price or 1.0
+                op.pnl_pct = round(((exit_p - entry_val) / entry_val) * 100, 2)
+            db.commit()
+            logger.info(f"Auto-squared off {len(older_pending)} stale pending trades.")
+
+        # 2. Restore active trades from DB for TODAY only (where outcome is PENDING)
+        pending_exits = db.query(BacktestResult).join(Alert).filter(
+            BacktestResult.outcome == "PENDING",
+            Alert.trigger_date == today_str
+        ).all()
         for exit_res in pending_exits:
             alert = exit_res.alert
             if alert:
@@ -120,8 +161,7 @@ async def lifespan(app: FastAPI):
                 asyncio.create_task(monitor_trade(alert.stock, alert.target, alert.stop_loss))
                 logger.info(f"Restored active trade monitor task for {alert.stock} | Target: {alert.target} | SL: {alert.stop_loss}")
         
-        # 2. Restore today's closed exits to memory
-        today_str = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%Y-%m-%d")
+        # 3. Restore today's closed exits to memory
         today_exits = db.query(BacktestResult).join(Alert).filter(
             Alert.trigger_date == today_str,
             BacktestResult.outcome != "PENDING"
