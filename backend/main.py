@@ -332,6 +332,7 @@ async def get_nifty_status():
     try:
         nifty_candles = await upstox_get_candles("NIFTY50")
         if not nifty_candles:
+            logger.warning("No NIFTY50 candles returned from Upstox API.")
             return nifty_cache  # return stale cache if API call fails
             
         nifty_vwap = calculate_vwap(nifty_candles[-50:])  # Last 50 candles
@@ -343,9 +344,10 @@ async def get_nifty_status():
             "is_bullish": nifty_ltp >= nifty_vwap
         }
         nifty_cache_time = now
+        logger.info(f"Polled NIFTY50 from Upstox: LTP={nifty_ltp:.2f} | VWAP={nifty_vwap:.2f} | Bullish={nifty_ltp >= nifty_vwap}")
         return nifty_cache
     except Exception as e:
-        logger.error(f"Error getting nifty status: {e}")
+        logger.error(f"Error getting nifty status: {e}", exc_info=True)
         return nifty_cache
 
 

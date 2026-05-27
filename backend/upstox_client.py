@@ -108,7 +108,7 @@ def get_historical_data(symbol: str, days: int = 3, end_date_str: str | None = N
     cutoff = (to_date_dt - timedelta(days=days + 1)).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
-    df = df[df["timestamp"] >= pd.Timestamp(cutoff)]
+    df = df[df["timestamp"] >= pd.Timestamp(cutoff)].reset_index(drop=True)
 
     return df
 
