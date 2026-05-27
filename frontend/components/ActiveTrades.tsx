@@ -1,6 +1,8 @@
 "use client";
 
 import { useWebSocket } from "./WebSocketListener";
+import { useState, useEffect } from "react";
+import { fetchExitsByDate, ExitResult } from "../lib/api";
 import { TrendingUp, TrendingDown, Minus, Activity, ShieldCheck } from "lucide-react";
 
 function fmt(val: number | null | undefined, decimals = 2): string {
@@ -31,21 +33,41 @@ function StatCard({ label, value, color, sub }: StatCardProps) {
   );
 }
 
-export default function ActiveTrades() {
-  const { activeTrades, exitResults } = useWebSocket();
+export default function ActiveTrades({ selectedDate }: { selectedDate: string }) {
+  const { activeTrades, exitResults: wsExits } = useWebSocket();
+  const [dbExits, setDbExits] = useState<ExitResult[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  const activeCount = Object.keys(activeTrades).length;
-  const closedCount = exitResults.length;
+  // Check if selectedDate is today in local time YYYY-MM-DD
+  const todayStr = new Date().toLocaleDateString("en-CA");
+  const isToday = selectedDate === todayStr;
+
+  // Fetch historical exits if not today
+  useEffect(() => {
+    if (!isToday) {
+      setLoading(true);
+      fetchExitsByDate(selectedDate).then((data) => {
+        setDbExits(data);
+        setLoading(false);
+      });
+    }
+  }, [selectedDate, isToday]);
+
+  const displayExits = isToday ? wsExits : dbExits;
+  const displayActiveTrades = isToday ? Object.values(activeTrades) : [];
+
+  const activeCount = displayActiveTrades.length;
+  const closedCount = displayExits.length;
 
   // Calculate Win Rate
-  const wins = exitResults.filter((t) => t.hit === "TARGET").length;
+  const wins = displayExits.filter((t) => t.hit === "TARGET").length;
   const winRate = closedCount > 0 ? (wins / closedCount) * 100 : 0.0;
 
   // Calculate Net P&L %
-  const netPnl = exitResults.reduce((sum, t) => sum + t.pct, 0.0);
+  const netPnl = displayExits.reduce((sum, t) => sum + t.pct, 0.0);
 
   // Convert activeTrades map to array
-  const tradesList = Object.values(activeTrades);
+  const tradesList = displayActiveTrades;
 
   return (
     <div className="card" style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -207,7 +229,11 @@ export default function ActiveTrades() {
           </div>
 
           <div style={{ flex: 1, overflowY: "auto", padding: 8 }}>
-            {exitResults.length === 0 ? (
+            {loading ? (
+              <div style={{ padding: 24, textAlign: "center", color: "#4b5563", fontSize: 12 }}>
+                Loading historical exits...
+              </div>
+            ) : displayExits.length === 0 ? (
               <div style={{ padding: 24, textAlign: "center", color: "#4b5563", fontSize: 12 }}>
                 No completed trades yet today.
               </div>
@@ -223,7 +249,7 @@ export default function ActiveTrades() {
                   </tr>
                 </thead>
                 <tbody>
-                  {[...exitResults].reverse().map((result, idx) => {
+                  {[...displayExits].reverse().map((result, idx) => {
                     const isTarget = result.hit === "TARGET";
                     return (
                       <tr key={idx} style={{ borderBottom: "1px solid #0f1923" }}>

@@ -1,15 +1,16 @@
 """
-main.py — FastAPI Application Entry Point (Revamped & Refactored)
+main.py — FastAPI Application Entry Point (Simplified SQL Persistence Version)
 
 Simplifies the platform:
-- In-memory state (no DB persistence)
-- Webhook alerts evaluation
+- Single DB persistence (SQLAlchemy models)
+- Webhook alerts evaluation and storage
 - WebSocket updates for live price updates & alerts
+- Restoring active monitoring tasks on server restart
 """
 
+import os
 import logging
 import asyncio
-import json
 import pytz
 from datetime import datetime, date, time
 from contextlib import asynccontextmanager
@@ -18,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from upstox_client import upstox_get_candles, upstox_get_ltp
 from rule_engine import evaluate_rules, calculate_vwap, calculate_pivot, calculate_resistances
+from database import get_db, init_db, Alert, BacktestResult, SessionLocal
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,41 +27,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-import os
-
 # ============ GLOBAL IN-MEMORY STATE ============
 active_trades = {}      # {"BHARTIARTL": {entry_price, target, stop_loss, entered_at, status, ltp, pnl_pct}, ...}
 exit_results = []       # [{"stock": "...", "pct": 0.48, "hit": "TARGET", "exit_price": ..., "exit_time": ...}, ...]
-alerts_history = []     # [{"stock": "...", "trigger_price": ..., "verdict": ..., "reason": ...}, ...]
 nifty_cache = None
 nifty_cache_time = None
-
-STATE_FILE = "state.json"
-
-def save_state():
-    try:
-        state = {
-            "active_trades": active_trades,
-            "exit_results": exit_results,
-            "alerts_history": alerts_history
-        }
-        with open(STATE_FILE, "w") as f:
-            json.dump(state, f, default=str)
-    except Exception as e:
-        logger.error(f"Failed to save state: {e}")
-
-def load_state():
-    global active_trades, exit_results, alerts_history
-    try:
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, "r") as f:
-                state = json.load(f)
-                active_trades = state.get("active_trades", {})
-                exit_results = state.get("exit_results", [])
-                alerts_history = state.get("alerts_history", [])
-            logger.info(f"Loaded state: {len(active_trades)} active trades, {len(exit_results)} exits, {len(alerts_history)} alerts.")
-    except Exception as e:
-        logger.error(f"Failed to load state: {e}")
 
 # ============ WEBSOCKET MANAGER ============
 class ConnectionManager:
@@ -75,8 +47,7 @@ class ConnectionManager:
             await websocket.send_json({
                 "type": "state",
                 "active_trades": active_trades,
-                "exit_results": exit_results,
-                "alerts_history": alerts_history
+                "exit_results": exit_results
             })
         except Exception:
             pass
@@ -103,8 +74,7 @@ async def state_broadcast_loop():
                 "type": "state",
                 "active_trades": active_trades,
                 "exit_results": exit_results,
-                "nifty_status": nifty_cache,
-                "alerts_history": alerts_history
+                "nifty_status": nifty_cache
             })
         except Exception as e:
             logger.error(f"Error in state broadcast loop: {e}")
@@ -127,18 +97,48 @@ async def nifty_refresh_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Load state from file
-    load_state()
+    # Initialize DB
+    init_db()
 
-    # Restore active trade monitoring tasks
-    for symbol, trade in list(active_trades.items()):
-        try:
-            target = float(trade["target"])
-            sl = float(trade["stop_loss"])
-            asyncio.create_task(monitor_trade(symbol, target, sl))
-            logger.info(f"Restored active trade monitor task for {symbol} | Target: {target} | SL: {sl}")
-        except Exception as e:
-            logger.error(f"Failed to restore active trade monitor task for {symbol}: {e}")
+    db = SessionLocal()
+    try:
+        # 1. Restore active trades from DB (where outcome is PENDING)
+        pending_exits = db.query(BacktestResult).filter(BacktestResult.outcome == "PENDING").all()
+        for exit_res in pending_exits:
+            alert = exit_res.alert
+            if alert:
+                active_trades[alert.stock] = {
+                    "stock": alert.stock,
+                    "entry_price": alert.entry_price,
+                    "target": alert.target,
+                    "stop_loss": alert.stop_loss,
+                    "entered_at": alert.trigger_time,
+                    "status": "monitoring",
+                    "ltp": alert.entry_price,
+                    "pnl_pct": 0.0
+                }
+                asyncio.create_task(monitor_trade(alert.stock, alert.target, alert.stop_loss))
+                logger.info(f"Restored active trade monitor task for {alert.stock} | Target: {alert.target} | SL: {alert.stop_loss}")
+        
+        # 2. Restore today's closed exits to memory
+        today_str = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%Y-%m-%d")
+        today_exits = db.query(BacktestResult).join(Alert).filter(
+            Alert.trigger_date == today_str,
+            BacktestResult.outcome != "PENDING"
+        ).all()
+        for ex in today_exits:
+            exit_results.append({
+                "stock": ex.alert.stock,
+                "pct": ex.pnl_pct,
+                "hit": "TARGET" if ex.outcome == "PROFIT" else "SL",
+                "exit_price": ex.exit_price,
+                "exit_time": ex.exit_time
+            })
+        logger.info(f"Loaded {len(exit_results)} exits for date {today_str} from DB.")
+    except Exception as e:
+        logger.error(f"Error restoring DB state on lifespan startup: {e}")
+    finally:
+        db.close()
 
     # Start background tasks
     broadcast_task = asyncio.create_task(state_broadcast_loop())
@@ -200,7 +200,6 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # Wait for any message from client (e.g., keepalive ping)
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
@@ -213,18 +212,66 @@ async def websocket_endpoint(websocket: WebSocket):
 async def health_check():
     return {"status": "ok", "time": datetime.now(pytz.timezone("Asia/Kolkata")).isoformat()}
 
+@app.get("/api/alerts")
+async def get_alerts_endpoint(
+    date: str = Query(..., description="Date format: YYYY-MM-DD")
+):
+    db = SessionLocal()
+    try:
+        alerts = db.query(Alert).filter(Alert.trigger_date == date).order_by(Alert.id.desc()).all()
+        return [{
+            "stock": a.stock,
+            "trigger_price": a.trigger_price,
+            "trigger_time": a.trigger_time,
+            "verdict": a.verdict,
+            "reason": a.verdict_reason,
+            "entry_price": a.entry_price,
+            "target": a.target,
+            "stop_loss": a.stop_loss
+        } for a in alerts]
+    except Exception as e:
+        logger.error(f"Error fetching alerts: {e}")
+        return []
+    finally:
+        db.close()
+
+@app.get("/api/backtest-results")
+async def get_backtest_results_endpoint(
+    date: str = Query(..., description="Date format: YYYY-MM-DD")
+):
+    db = SessionLocal()
+    try:
+        exits = db.query(BacktestResult).join(Alert).filter(
+            Alert.trigger_date == date,
+            BacktestResult.outcome != "PENDING"
+        ).order_by(BacktestResult.id.desc()).all()
+        return [{
+            "stock": ex.alert.stock,
+            "pct": ex.pnl_pct,
+            "hit": "TARGET" if ex.outcome == "PROFIT" else "SL",
+            "exit_price": ex.exit_price,
+            "exit_time": ex.exit_time
+        } for ex in exits]
+    except Exception as e:
+        logger.error(f"Error fetching exits: {e}")
+        return []
+    finally:
+        db.close()
+
 # ============ CORE LOGIC ============
 
 async def evaluate_stock(stock_symbol: str, trigger_price: float, timestamp_str: str | None):
     """
     1. Fetch live candles
     2. Evaluate 4 rules
-    3. If ENTER: add to active_trades and start monitoring
+    3. If ENTER: add to active_trades, save to DB, and start monitoring
     """
+    db = SessionLocal()
     try:
         logger.info(f"Evaluating {stock_symbol} triggered at {timestamp_str}...")
         
         trigger_time = parse_time_to_ist(timestamp_str)
+        trigger_date_str = trigger_time.strftime("%Y-%m-%d")
         
         # Check market hours
         if not is_market_hours(trigger_time):
@@ -258,58 +305,105 @@ async def evaluate_stock(stock_symbol: str, trigger_price: float, timestamp_str:
             trigger_time=trigger_time
         )
         
+        # Calculate indicator statistics for DB logging
+        vwap_val = calculate_vwap(historical_candles)
+        pivot_val = calculate_pivot(historical_candles)
+        r1, r2, r3 = calculate_resistances(pivot_val)
+        
+        closes = [c["close"] for c in historical_candles]
+        ema9_val = sum(closes[-9:]) / len(closes[-9:]) if closes else 0.0
+        
+        upper_wick_val = current_candle["high"] - max(current_candle["open"], current_candle["close"])
+        solid_body_val = abs(current_candle["open"] - current_candle["close"])
+        
+        # 1. Create Alert Record
+        alert_rec = Alert(
+            scan_name=None,
+            alert_name=None,
+            stock=stock_symbol,
+            trigger_time=timestamp_str or trigger_time.strftime("%I:%M %p"),
+            trigger_date=trigger_date_str,
+            trigger_price=trigger_price,
+            entry_price=round(current_candle["open"], 2),
+            target=round(r1 if r1 > current_candle["open"] else r2, 2),
+            stop_loss=round(min(vwap_val, current_candle["low"]), 2),
+            vwap=round(vwap_val, 2),
+            ema9=round(ema9_val, 2),
+            pivot_r1=round(r1, 2),
+            pivot_r2=round(r2, 2),
+            pivot_r3=round(r3, 2),
+            pivot_s1=round(pivot_val["pivot"], 2) if pivot_val else None,
+            upper_wick=round(upper_wick_val, 2),
+            solid_body=round(solid_body_val, 2),
+            nifty_ltp=round(nifty_status["ltp"], 2) if nifty_status else None,
+            nifty_vwap=round(nifty_status["vwap"], 2) if nifty_status else None,
+            verdict=verdict,
+            verdict_reason=reason
+        )
+
+        entry_price = current_candle["open"]
+        sl = min(vwap_val, current_candle["low"])
+        
+        # Apply SL safety checks
+        if sl < entry_price * 0.98:
+            sl = entry_price * 0.99
+        if sl >= entry_price:
+            sl = entry_price * 0.995
+            
+        target = r1 if r1 > entry_price else (r2 if r2 > entry_price else (r3 if r3 > entry_price else entry_price * 1.015))
+        
+        alert_rec.entry_price = round(entry_price, 2)
+        alert_rec.stop_loss = round(sl, 2)
+        alert_rec.target = round(target, 2)
+        
+        db.add(alert_rec)
+        db.commit()
+        db.refresh(alert_rec)
+
         alert_data = {
             "stock": stock_symbol,
             "trigger_price": trigger_price,
-            "trigger_time": timestamp_str,
+            "trigger_time": timestamp_str or trigger_time.strftime("%I:%M %p"),
             "verdict": verdict,
-            "reason": reason
+            "reason": reason,
+            "entry_price": round(entry_price, 2),
+            "target": round(target, 2),
+            "stop_loss": round(sl, 2)
         }
         
-        # Save to alerts_history
-        alerts_history.insert(0, alert_data)
-        if len(alerts_history) > 100:
-            alerts_history.pop()
-        save_state()
-
         # Broadcast alert immediately
         broadcast_alert(alert_data)
-        logger.info(f"Verdict for {stock_symbol}: {verdict} | Reason: {reason}")
+        logger.info(f"Verdict for {stock_symbol}: {verdict} | Reason: {reason} | DB Alert ID: {alert_rec.id}")
         
         # If ENTER, calculate entry/target/SL and start monitoring
         if verdict == "ENTER":
-            entry_price = current_candle["open"]
-            
-            # Calculate indicators up to current candle
-            idx = candles.index(current_candle)
-            vwap = calculate_vwap(candles[:idx+1])
-            pivot = calculate_pivot(candles[:idx+1])
-            r1, r2, r3 = calculate_resistances(pivot)
-            
-            sl = min(vwap, current_candle["low"])
-            
-            # Apply SL safety checks (from previous fixes)
-            if sl < entry_price * 0.98:
-                sl = entry_price * 0.99
-            if sl >= entry_price:
-                sl = entry_price * 0.995
-                
-            # Target is next resistance above entry, breakout target is +1.5%
-            target = r1 if r1 > entry_price else (r2 if r2 > entry_price else (r3 if r3 > entry_price else entry_price * 1.015))
-            
             trade_data = {
                 "stock": stock_symbol,
                 "entry_price": round(entry_price, 2),
                 "target": round(target, 2),
                 "stop_loss": round(sl, 2),
-                "entered_at": timestamp_str,
+                "entered_at": timestamp_str or trigger_time.strftime("%I:%M %p"),
                 "status": "monitoring",
                 "ltp": round(entry_price, 2),
                 "pnl_pct": 0.0
             }
             
             active_trades[stock_symbol] = trade_data
-            save_state()
+            
+            # Create BacktestResult DB record with outcome 'PENDING'
+            exit_rec = BacktestResult(
+                alert_id=alert_rec.id,
+                entry_time=timestamp_str or trigger_time.strftime("%I:%M %p"),
+                entry_price=round(entry_price, 2),
+                exit_time=None,
+                exit_price=None,
+                outcome="PENDING",
+                pnl_pct=0.0,
+                quantity=1,
+                pnl_amount=0.0
+            )
+            db.add(exit_rec)
+            db.commit()
             
             # Start monitoring in background
             asyncio.create_task(monitor_trade(stock_symbol, target, sl))
@@ -317,7 +411,8 @@ async def evaluate_stock(stock_symbol: str, trigger_price: float, timestamp_str:
 
     except Exception as e:
         logger.error(f"Error evaluating {stock_symbol}: {e}", exc_info=True)
-
+    finally:
+        db.close()
 
 async def monitor_trade(stock_symbol: str, target: float, stop_loss: float):
     """
@@ -339,31 +434,75 @@ async def monitor_trade(stock_symbol: str, target: float, stop_loss: float):
             # Check target hit
             if current_price >= target:
                 pct = ((target - entry_price) / entry_price) * 100
+                exit_time_str = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%I:%M %p")
+                
+                # Update database
+                db = SessionLocal()
+                try:
+                    today_str = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%Y-%m-%d")
+                    exit_rec = db.query(BacktestResult).join(Alert).filter(
+                        Alert.stock == stock_symbol,
+                        Alert.trigger_date == today_str,
+                        BacktestResult.outcome == "PENDING"
+                    ).first()
+                    if exit_rec:
+                        exit_rec.exit_price = round(target, 2)
+                        exit_rec.exit_time = exit_time_str
+                        exit_rec.outcome = "PROFIT"
+                        exit_rec.pnl_pct = round(pct, 2)
+                        db.commit()
+                        logger.info(f"Updated DB backtest result for {stock_symbol} to PROFIT.")
+                except Exception as ex:
+                    logger.error(f"Error updating DB for target hit: {ex}")
+                finally:
+                    db.close()
+                    
                 exit_results.append({
                     "stock": stock_symbol,
                     "pct": round(pct, 2),
                     "hit": "TARGET",
                     "exit_price": round(target, 2),
-                    "exit_time": datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%I:%M %p")
+                    "exit_time": exit_time_str
                 })
                 logger.info(f"Target hit for {stock_symbol} at {current_price:.2f}. Trade closed.")
                 del active_trades[stock_symbol]
-                save_state()
                 break
                 
             # Check stop loss hit
             if current_price <= stop_loss:
                 pct = ((stop_loss - entry_price) / entry_price) * 100
+                exit_time_str = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%I:%M %p")
+                
+                # Update database
+                db = SessionLocal()
+                try:
+                    today_str = datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%Y-%m-%d")
+                    exit_rec = db.query(BacktestResult).join(Alert).filter(
+                        Alert.stock == stock_symbol,
+                        Alert.trigger_date == today_str,
+                        BacktestResult.outcome == "PENDING"
+                    ).first()
+                    if exit_rec:
+                        exit_rec.exit_price = round(stop_loss, 2)
+                        exit_rec.exit_time = exit_time_str
+                        exit_rec.outcome = "LOSS"
+                        exit_rec.pnl_pct = round(pct, 2)
+                        db.commit()
+                        logger.info(f"Updated DB backtest result for {stock_symbol} to LOSS.")
+                except Exception as ex:
+                    logger.error(f"Error updating DB for SL hit: {ex}")
+                finally:
+                    db.close()
+                    
                 exit_results.append({
                     "stock": stock_symbol,
                     "pct": round(pct, 2),
                     "hit": "SL",
                     "exit_price": round(stop_loss, 2),
-                    "exit_time": datetime.now(pytz.timezone("Asia/Kolkata")).strftime("%I:%M %p")
+                    "exit_time": exit_time_str
                 })
                 logger.info(f"Stop Loss hit for {stock_symbol} at {current_price:.2f}. Trade closed.")
                 del active_trades[stock_symbol]
-                save_state()
                 break
                 
             await asyncio.sleep(10)
@@ -371,7 +510,6 @@ async def monitor_trade(stock_symbol: str, target: float, stop_loss: float):
         except Exception as e:
             logger.error(f"Monitoring error for {stock_symbol}: {e}")
             await asyncio.sleep(10)
-
 
 async def get_nifty_status():
     """
@@ -404,14 +542,12 @@ async def get_nifty_status():
         logger.error(f"Error getting nifty status: {e}", exc_info=True)
         return nifty_cache
 
-
 def broadcast_alert(alert_data: dict):
     """Send alert to all connected WebSocket clients."""
     asyncio.create_task(manager.broadcast_json({
         "type": "alert",
         "alert": alert_data
     }))
-
 
 # ============ HELPER FUNCTIONS ============
 
@@ -438,13 +574,11 @@ def parse_time_to_ist(time_str: str | None) -> datetime:
     # Combine with today's date in IST
     return datetime.combine(now_ist.date(), parsed_time)
 
-
 def is_market_hours(dt: datetime) -> bool:
     """Check if datetime is within Mon-Fri 09:15-15:30 IST."""
     if dt.weekday() >= 5:
         return False
     return time(9, 15) <= dt.time() <= time(15, 30)
-
 
 def get_candle_at_time(candles: list[dict], target_time: datetime) -> dict | None:
     """Find closest 5-min candle to target_time (timestamp <= target_time)."""
@@ -452,7 +586,6 @@ def get_candle_at_time(candles: list[dict], target_time: datetime) -> dict | Non
     if matching:
         return matching[-1]
     return candles[-1] if candles else None
-
 
 if __name__ == "__main__":
     import uvicorn

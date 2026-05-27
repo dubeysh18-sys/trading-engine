@@ -41,7 +41,13 @@ function useISTDate() {
   return date;
 }
 
-export default function Header() {
+export default function Header({
+  selectedDate,
+  setSelectedDate,
+}: {
+  selectedDate: string;
+  setSelectedDate: (d: string) => void;
+}) {
   const time = useISTClock();
   const date = useISTDate();
   const { niftyStatus } = useWebSocket();
@@ -194,8 +200,26 @@ export default function Header() {
         )}
       </div>
 
-      {/* ── Right: Clock & IST Info ────────────────────────────── */}
+      {/* ── Right: Date Picker & Clock ────────────────────────────── */}
       <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+        {/* Date Picker */}
+        <div style={{ marginRight: 8 }}>
+          <input
+            type="date"
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+            style={{
+              background: "#0a0e17",
+              color: "#e2e8f0",
+              border: "1px solid #1e2d45",
+              borderRadius: "6px",
+              padding: "4px 8px",
+              fontSize: "12px",
+              fontFamily: "JetBrains Mono, monospace",
+              outline: "none",
+            }}
+          />
+        </div>
         <div style={{ textAlign: "right" }}>
           <div
             style={{

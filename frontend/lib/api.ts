@@ -11,6 +11,9 @@ export interface Alert {
   trigger_time: string;
   verdict: "ENTER" | "WAIT" | "SKIP" | "ERROR";
   reason: string;
+  entry_price?: number;
+  target?: number;
+  stop_loss?: number;
 }
 
 export interface ActiveTrade {
@@ -30,4 +33,26 @@ export interface ExitResult {
   hit: "TARGET" | "SL";
   exit_price?: number;
   exit_time?: string;
+}
+
+export async function fetchAlertsByDate(dateStr: string): Promise<Alert[]> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/alerts?date=${dateStr}`);
+    if (!res.ok) throw new Error("Failed to fetch alerts");
+    return await res.json();
+  } catch (err) {
+    console.error("Error in fetchAlertsByDate:", err);
+    return [];
+  }
+}
+
+export async function fetchExitsByDate(dateStr: string): Promise<ExitResult[]> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/backtest-results?date=${dateStr}`);
+    if (!res.ok) throw new Error("Failed to fetch exits");
+    return await res.json();
+  } catch (err) {
+    console.error("Error in fetchExitsByDate:", err);
+    return [];
+  }
 }

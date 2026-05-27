@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { ExternalLink, Settings2, Zap } from "lucide-react";
 import { useWebSocket } from "./WebSocketListener";
 import VerdictPill from "./VerdictPill";
+import { fetchAlertsByDate, Alert } from "../lib/api";
 
 /* ── helpers ──────────────────────────────────────────────────────── */
 function fmt(v: number | null | undefined, d = 2) {
@@ -73,13 +74,30 @@ function StyledSelect<T extends string | number>({
 }
 
 /* ── Main component ───────────────────────────────────────────────── */
-export default function AlertFeed() {
-  const { alerts, isConnected } = useWebSocket();
+export default function AlertFeed({ selectedDate }: { selectedDate: string }) {
+  const { alerts: wsAlerts, isConnected } = useWebSocket();
+  const [dbAlerts, setDbAlerts] = useState<Alert[]>([]);
+  const [loading, setLoading] = useState(false);
   const [capital, setCapital] = useState(50000);
   const [leverage, setLeverage] = useState(4);
   const [filter, setFilter] = useState<"ALL" | "ENTER" | "WAIT" | "SKIP">("ALL");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<HTMLDivElement>(null);
+
+  // Check if selectedDate is today in local time YYYY-MM-DD
+  const todayStr = new Date().toLocaleDateString("en-CA");
+  const isToday = selectedDate === todayStr;
+
+  // Fetch historical alerts if not today
+  useEffect(() => {
+    if (!isToday) {
+      setLoading(true);
+      fetchAlertsByDate(selectedDate).then((data) => {
+        setDbAlerts(data);
+        setLoading(false);
+      });
+    }
+  }, [selectedDate, isToday]);
 
   // Dismiss settings panel on outside click
   useEffect(() => {
@@ -92,7 +110,9 @@ export default function AlertFeed() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  const filteredAlerts = alerts.filter((alert) => {
+  const displayedAlerts = isToday ? wsAlerts : dbAlerts;
+
+  const filteredAlerts = displayedAlerts.filter((alert) => {
     if (filter === "ALL") return true;
     return alert.verdict === filter;
   });
@@ -116,8 +136,8 @@ export default function AlertFeed() {
           </h2>
           <span
             style={{
-              background: isConnected ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)",
-              color: isConnected ? "var(--accent-green)" : "var(--accent-red)",
+              background: !isToday ? "rgba(148,163,184,0.15)" : (isConnected ? "rgba(34,197,94,0.15)" : "rgba(239,68,68,0.15)"),
+              color: !isToday ? "#94a3b8" : (isConnected ? "var(--accent-green)" : "var(--accent-red)"),
               fontSize: 10,
               fontWeight: 700,
               padding: "1px 7px",
@@ -125,7 +145,7 @@ export default function AlertFeed() {
               borderRadius: 4,
             }}
           >
-            {isConnected ? "LIVE" : "OFFLINE"}
+            {!isToday ? "HISTORICAL" : (isConnected ? "LIVE" : "OFFLINE")}
           </span>
         </div>
 
@@ -224,7 +244,11 @@ export default function AlertFeed() {
 
       {/* Alert Feed Body */}
       <div className="card-body" style={{ flex: 1, overflowY: "auto" }}>
-        {filteredAlerts.length === 0 ? (
+        {loading ? (
+          <div style={{ padding: 40, textAlign: "center", color: "#4b5563" }}>
+            <div style={{ fontSize: 13 }}>Loading historical alerts...</div>
+          </div>
+        ) : filteredAlerts.length === 0 ? (
           <div style={{ padding: 40, textAlign: "center", color: "#4b5563" }}>
             <div style={{ fontSize: 28, marginBottom: 10 }}>📡</div>
             <div style={{ fontSize: 13 }}>Waiting for live Chartink alerts...</div>
