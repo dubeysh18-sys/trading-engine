@@ -351,6 +351,26 @@ def get_debug_log(level: str = Query(None)):
     return {"count": len(logs), "logs": logs[-100:]}
 
 
+@app.get("/api/temp-query")
+def temp_query(db: Session = Depends(get_db)):
+    try:
+        from sqlalchemy import text
+        res = db.execute(text("SELECT stock, trigger_time, trigger_date, vwap, stop_loss, entry_price FROM alerts WHERE trigger_date = '2026-05-26' ORDER BY trigger_time;"))
+        out = []
+        for r in res:
+            out.append({
+                "stock": r[0],
+                "trigger_time": r[1],
+                "trigger_date": r[2],
+                "vwap": r[3],
+                "stop_loss": r[4],
+                "entry_price": r[5]
+            })
+        return out
+    except Exception as e:
+        return {"error": str(e)}
+
+
 # ── Webhook Receiver ───────────────────────────────────────────────────────────
 @app.post("/api/webhook/chartink")
 async def receive_chartink_alert(
