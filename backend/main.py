@@ -324,33 +324,49 @@ async def evaluate_stock(stock_symbol: str, trigger_price: float, timestamp_str:
             logger.error(f"Failed to fetch candles for {stock_symbol}")
             return
 
-        # Get current 5-min candle closest to trigger_time
+        # ── Bug-2 Fix: Separate closed candles from the live tick ──────────────
+        # get_candle_at_time() returns the last CLOSED candle whose timestamp
+        # is <= trigger_time.  Any candle after that is still forming.
         current_candle = get_candle_at_time(candles, trigger_time)
         if not current_candle:
             logger.error(f"No matching candle at trigger time for {stock_symbol}")
             return
 
+        idx = candles.index(current_candle)
+        # closed_candles includes current_candle (the last fully closed 5-min bar)
+        # but does NOT include any candle opened after trigger_time.
+        closed_candles = candles[:idx + 1]
+
+        # Fetch live LTP separately — this is the real-time tick *inside* the
+        # currently forming (incomplete) candle and must not pollute VWAP/wick.
+        live_ltp = await upstox_get_ltp(stock_symbol)
+        if live_ltp is None:
+            # Fall back to the last closed candle's close price
+            live_ltp = current_candle["close"]
+            logger.warning(f"Could not fetch live LTP for {stock_symbol}; using last closed candle close.")
+        else:
+            logger.info(f"Live LTP for {stock_symbol}: {live_ltp:.2f} (closed candle close: {current_candle['close']:.2f})")
+        # ──────────────────────────────────────────────────────────────────────
+
         # Fetch NIFTY status (cached)
         nifty_status = await get_nifty_status()
 
-        # Evaluate rules
-        idx = candles.index(current_candle)
-        historical_candles = candles[:idx+1]
-
+        # Evaluate rules — pass closed_candles for structure, live_ltp for distance
         verdict, reason = evaluate_rules(
             stock=stock_symbol,
             current_candle=current_candle,
-            all_candles=historical_candles,
+            closed_candles=closed_candles,
             nifty_status=nifty_status,
-            trigger_time=trigger_time
+            trigger_time=trigger_time,
+            live_price=live_ltp
         )
         
-        # Calculate indicator statistics for DB logging
-        vwap_val = calculate_vwap(historical_candles)
-        pivot_val = calculate_pivot(historical_candles)
+        # Calculate indicator statistics for DB logging (always from closed candles)
+        vwap_val = calculate_vwap(closed_candles)
+        pivot_val = calculate_pivot(closed_candles)
         r1, r2, r3 = calculate_resistances(pivot_val)
         
-        closes = [c["close"] for c in historical_candles]
+        closes = [c["close"] for c in closed_candles]
         ema9_val = sum(closes[-9:]) / len(closes[-9:]) if closes else 0.0
         
         upper_wick_val = current_candle["high"] - max(current_candle["open"], current_candle["close"])
@@ -566,17 +582,31 @@ async def get_nifty_status():
         if not nifty_candles:
             logger.warning("No NIFTY50 candles returned from Upstox API.")
             return nifty_cache  # return stale cache if API call fails
-            
-        nifty_vwap = calculate_vwap(nifty_candles[-50:])  # Last 50 candles
-        nifty_ltp = nifty_candles[-1]["close"]
-        
+
+        # ── Bug-2 Fix: Use real LTP for NIFTY, not last candle close ──────────
+        # The last candle in the list may be an incomplete (still-forming) candle.
+        # We fetch the live LTP from the API so the bullish/bearish determination
+        # reflects the actual current market tick, not a stale partial-candle close.
+        nifty_ltp_live = await upstox_get_ltp("NIFTY50")
+
+        # VWAP is computed on ALL closed candles for today only (daily anchor).
+        # We intentionally skip slicing to [-50:] here; calculate_vwap already
+        # filters to today's candles, so passing all candles is correct.
+        nifty_vwap = calculate_vwap(nifty_candles)
+
+        # Prefer live LTP; fall back to last closed candle's close if unavailable
+        nifty_ltp = nifty_ltp_live if nifty_ltp_live is not None else nifty_candles[-1]["close"]
+        if nifty_ltp_live is None:
+            logger.warning("Could not fetch live NIFTY50 LTP; using last candle close as fallback.")
+        # ──────────────────────────────────────────────────────────────────────
+
         nifty_cache = {
             "ltp": nifty_ltp,
             "vwap": nifty_vwap,
             "is_bullish": nifty_ltp >= nifty_vwap
         }
         nifty_cache_time = now
-        logger.info(f"Polled NIFTY50 from Upstox: LTP={nifty_ltp:.2f} | VWAP={nifty_vwap:.2f} | Bullish={nifty_ltp >= nifty_vwap}")
+        logger.info(f"Polled NIFTY50: Live LTP={nifty_ltp:.2f} | VWAP={nifty_vwap:.2f} | Bullish={nifty_ltp >= nifty_vwap}")
         return nifty_cache
     except Exception as e:
         logger.error(f"Error getting nifty status: {e}", exc_info=True)
